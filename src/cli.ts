@@ -5,6 +5,7 @@ import { configPath, initConfig, loadConfig } from './config.js';
 import { Hub } from './hub.js';
 import { createServer } from './server.js';
 import { installHubSkill, SkillStore } from './skills.js';
+import { Registry } from './registry.js';
 
 async function main() {
   const { values, positionals } = parseArgs({ options: { config: { type: 'string' }, 'skills-dir': { type: 'string' }, help: { type: 'boolean', short: 'h' } }, allowPositionals: true });
@@ -26,7 +27,8 @@ async function main() {
     console.log(`Config valid: ${Object.keys(config.servers).length} servers, ${Object.keys(config.skills).length} skills (none started).`);
     return;
   }
-  const hub = new Hub(config);
+  const hub = new Hub(config, new Registry(path + '.agents.json'));
+  await hub.refresh();
   const server = createServer(hub);
   const transport = new StdioServerTransport();
   let shutdownPromise: Promise<void> | undefined;

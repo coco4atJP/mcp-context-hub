@@ -3,9 +3,13 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CallToolResultSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { expandEnv, type Config, type ServerConfig } from './config.js';
+import { expandEnv, idSchema, serverSchema, type Config, type ServerConfig } from './config.js';
+import { createHash } from 'node:crypto';
 import { HubError } from './errors.js';
 import { SkillStore } from './skills.js';
+import { Registry, registrationSchema, type Registration } from './registry.js';
+import { guardedFetch, validateAgentUrl } from './network.js';
+import { ResultStore } from './context.js';
 
 export { HubError } from './errors.js';
 type Entry = {
@@ -16,6 +20,11 @@ type Entry = {
   timer?: NodeJS.Timeout;
   tail: Promise<unknown>;
   state: 'stopped' | 'starting' | 'running' | 'stopping';
+  source: 'configured' | 'agent';
+  signature?: string;
+  privateHttp: boolean;
+  revoked: AbortController;
+  cleanup?: () => Promise<void>;
 };
 
 export class Hub {
@@ -24,12 +33,127 @@ export class Hub {
   private readonly shutdown = new AbortController();
   private closePromise?: Promise<void>;
   private readonly skills: SkillStore;
+  readonly results = new ResultStore();
+  readonly context: Config['context'];
+  private mutations: Promise<unknown> = Promise.resolve();
+  private focusIds?: Set<string>;
 
-  constructor(private readonly config: Config) {
+  constructor(private readonly config: Config, private readonly registry = new Registry()) {
     this.skills = new SkillStore(config.skills);
+    this.context = { ...config.context };
     for (const [id, server] of Object.entries(config.servers)) {
-      this.entries.set(id, { config: server, enabled: server.enabled, tail: Promise.resolve(), state: 'stopped' });
+      this.entries.set(id, this.newEntry(server, 'configured', true));
     }
+  }
+
+  private newEntry(config: ServerConfig, source: Entry['source'], privateHttp: boolean, signature?: string): Entry {
+    return { config, enabled: config.enabled, tail: Promise.resolve(), state: 'stopped', source, privateHttp, signature, revoked: new AbortController() };
+  }
+
+  private mutate<T>(action: () => Promise<T>): Promise<T> {
+    const next = this.mutations.then(action);
+    this.mutations = next.catch(() => {});
+    return next;
+  }
+
+  private resolveRegistration(registration: Registration): { config: ServerConfig; privateHttp: boolean } {
+    let base: ServerConfig;
+    let privateHttp = true;
+    if ('template' in registration) {
+      if (!Object.hasOwn(this.config.templates, registration.template)) throw new HubError('Unknown owner-defined template. Use control help for add.');
+      base = this.config.templates[registration.template]!;
+      if (registration.enabled && !base.enabled && !base.allowAgentEnable) throw new HubError('Template policy forbids enabling this server.');
+      if (base.allowedTools && registration.allowedTools?.some(tool => !base.allowedTools!.includes(tool))) throw new HubError('Cannot widen a template tool allowlist.');
+    } else {
+      const url = validateAgentUrl(registration.url, this.config.agent);
+      privateHttp = this.config.agent.allowedHttpOrigins.some(origin => new URL(origin).origin === url.origin);
+      base = serverSchema.parse({ transport: 'http', url: url.href });
+    }
+    const { enabled, description, tags, allowedTools, skills } = registration;
+    const config = serverSchema.parse({ ...base, enabled,
+      ...(description !== undefined ? { description } : {}), ...(tags !== undefined ? { tags } : {}),
+      ...(allowedTools !== undefined ? { allowedTools } : {}), ...(skills !== undefined ? { skills } : {}) });
+    if (config.skills.some(id => !Object.hasOwn(this.config.skills, id))) throw new HubError('Only owner-registered skills can be attached.');
+    return { config, privateHttp };
+  }
+
+  private revoke(id: string, entry: Entry) {
+    entry.enabled = false;
+    entry.revoked.abort();
+    this.results.forget(id);
+  }
+
+  private async syncRegistry() {
+    const document = await this.registry.read();
+    // Revalidate persisted, agent-written definitions against current owner policy before using them.
+    const resolved = new Map(Object.entries(document.servers).map(([id, registration]) => {
+      if (Object.hasOwn(this.config.servers, id)) throw new HubError('Agent registry conflicts with an owner-defined server.');
+      return [id, { ...this.resolveRegistration(registration), signature: JSON.stringify(registration) }];
+    }));
+    if (resolved.size > this.config.agent.maxServers) throw new HubError('Agent registry exceeds owner server limit.');
+    for (const [id, entry] of this.entries) {
+      if (entry.source !== 'agent' || resolved.get(id)?.signature === entry.signature) continue;
+      this.revoke(id, entry);
+      await this.queue(entry, () => this.disconnect(entry));
+      this.entries.delete(id);
+    }
+    for (const [id, value] of resolved) {
+      if (this.entries.has(id)) continue;
+      const entry = this.newEntry(value.config, 'agent', value.privateHttp, value.signature);
+      if (this.focusIds && !this.focusIds.has(id)) entry.enabled = false;
+      this.entries.set(id, entry);
+    }
+  }
+
+  refresh() { return this.mutate(() => this.syncRegistry()); }
+
+  registrationPolicy() {
+    return { publicHttps: this.config.agent.allowPublicHttp, maxServers: this.config.agent.maxServers,
+      templates: Object.entries(this.config.templates).map(([template, value]) => ({ template, description: value.description, transport: value.transport })) };
+  }
+
+  add(id: string, input: unknown) {
+    return this.mutate(async () => {
+      idSchema.parse(id);
+      const parsed = registrationSchema.safeParse(input);
+      if (!parsed.success) throw new HubError('Invalid registration. Use hub_control help with action add for its schema. Raw commands, credentials and policy edits are not accepted.');
+      const registration = parsed.data;
+      this.resolveRegistration(registration);
+      if (Object.hasOwn(this.config.servers, id)) throw new HubError('Cannot replace an owner-defined server.');
+      await this.registry.mutate(document => {
+        if (Object.hasOwn(document.servers, id)) throw new HubError('Server ID already exists. Remove it before adding a replacement.');
+        if (Object.keys(document.servers).length >= this.config.agent.maxServers) throw new HubError('Agent server limit reached.');
+        document.servers[id] = registration;
+      });
+      await this.syncRegistry();
+      return { ...this.summary(id, this.entry(id)), scope: this.registry.path ? 'shared' : 'session' };
+    });
+  }
+
+  remove(id: string) {
+    return this.mutate(async () => {
+      await this.syncRegistry();
+      const entry = this.entry(id);
+      if (!entry.config.allowAgentRemove) throw new HubError('Owner policy prevents removing this server.');
+      if (entry.source === 'agent') await this.registry.mutate(document => { delete document.servers[id]; });
+      this.revoke(id, entry);
+      await this.queue(entry, () => this.disconnect(entry));
+      this.entries.delete(id);
+      return { server: id, removed: true, scope: entry.source === 'agent' && this.registry.path ? 'shared' : 'session' };
+    });
+  }
+
+  focus(ids: string[]) {
+    return this.mutate(async () => {
+      ids = [...new Set(ids)];
+      for (const id of ids) {
+        const entry = this.entry(id);
+        if (!entry.enabled && !entry.config.allowAgentEnable) throw new HubError(`Owner policy prevents enabling ${id}.`);
+      }
+      this.focusIds = new Set(ids);
+      await Promise.all([...this.entries].map(([id]) => this.control(id, this.focusIds!.has(id) ? 'enable' : 'disable')));
+      return { enabled: [...this.focusIds], disabled: this.entries.size - this.focusIds.size };
+    });
   }
 
   private entry(id: string): Entry {
@@ -38,11 +162,14 @@ export class Hub {
     return entry;
   }
 
+  isEnabled(id: string): boolean { return this.entries.get(id)?.enabled ?? false; }
+
   private summary(id: string, entry: Entry) {
     return {
-      server: id, description: entry.config.description, tags: entry.config.tags,
+      server: id, description: entry.config.description.slice(0, this.context.summaryChars),
       enabled: entry.enabled, state: entry.state,
-      agentCanEnable: entry.config.allowAgentEnable,
+      ...(!entry.config.allowAgentEnable ? { agentCanEnable: false } : {}),
+      source: entry.source,
       ...(this.skillIds(entry).length ? { skillCount: this.skillIds(entry).length } : {}),
     };
   }
@@ -55,14 +182,14 @@ export class Hub {
     return [...new Set([...entry.config.skills, ...specific])];
   }
 
-  async catalog(query = '', offset = 0, limit = 20, server?: string, tool?: string) {
+  async catalog(query = '', offset = 0, limit = this.context.listLimit, server?: string, tool?: string) {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const includes = (text: string) => terms.every(term => text.toLowerCase().includes(term));
     if (server) {
       const entry = this.entry(server);
       const skills = (await Promise.all(this.skillIds(entry, tool).map(id => this.skills.summary(id))))
         .filter(skill => includes(`${skill.skill} ${skill.description}`));
-      return { ...this.summary(server, entry), skills: skills.slice(offset, offset + limit), total: skills.length,
+      return { ...this.summary(server, entry), skills: skills.slice(offset, offset + limit).map(skill => ({ ...skill, description: skill.description.slice(0, this.context.summaryChars) })), total: skills.length,
         ...(offset + limit < skills.length ? { nextOffset: offset + limit } : {}) };
     }
     // Read each shared skill's metadata once per search, only when a query needs it.
@@ -120,19 +247,16 @@ export class Hub {
       if (transport instanceof StreamableHTTPClientTransport) await transport.terminateSession().catch(() => {});
       await client?.close();
     }
-    finally { entry.state = 'stopped'; }
+    finally { await entry.cleanup?.(); entry.cleanup = undefined; entry.state = 'stopped'; }
   }
 
-  private transport(config: ServerConfig): Transport {
+  private transport(config: ServerConfig, entry: Entry): Transport {
     if (config.transport === 'http') {
+      const network = guardedFetch(config.url, entry.privateHttp);
+      entry.cleanup = network.close;
       return new StreamableHTTPClientTransport(new URL(config.url), {
         requestInit: { headers: Object.fromEntries(Object.entries(config.headers).map(([key, value]) => [key, expandEnv(value)])) },
-        fetch: (url, init) => {
-          // Session cleanup must not stall process shutdown if the endpoint is unavailable.
-          if (init?.method !== 'DELETE') return fetch(url, init);
-          const signal = AbortSignal.any([AbortSignal.timeout(1000), ...(init.signal ? [init.signal] : [])]);
-          return fetch(url, { ...init, signal });
-        },
+        fetch: network.fetch,
       });
     }
     const env: Record<string, string> = {};
@@ -150,20 +274,21 @@ export class Hub {
   private async connect(entry: Entry, signal: AbortSignal): Promise<Client> {
     if (entry.client) return entry.client;
     entry.state = 'starting';
-    const client = new Client({ name: 'mcp-context-hub', version: '0.1.0' }, { capabilities: {} });
+    const client = new Client({ name: 'mcp-context-hub', version: '0.2.0' }, { capabilities: {} });
     let transport: Transport | undefined;
     try {
-      transport = this.transport(entry.config);
+      transport = this.transport(entry.config, entry);
       await client.connect(transport, { signal, timeout: entry.config.timeoutMs ?? this.config.timeoutMs });
       entry.client = client;
       entry.transport = transport;
       entry.state = 'running';
       client.onclose = () => {
-        if (entry.client === client) { entry.client = undefined; entry.transport = undefined; entry.state = 'stopped'; }
+        if (entry.client === client) { entry.client = undefined; entry.transport = undefined; entry.state = 'stopped'; void entry.cleanup?.(); entry.cleanup = undefined; }
       };
       return client;
     } catch (error) {
       await transport?.close().catch(() => {});
+      await entry.cleanup?.(); entry.cleanup = undefined;
       entry.state = 'stopped';
       throw error;
     }
@@ -173,9 +298,10 @@ export class Hub {
     const entry = this.entry(id);
     return this.queue(entry, async () => {
       if (this.closing) throw new HubError('Hub is shutting down.');
+      if (this.entries.get(id) !== entry) throw new HubError('Server was removed or replaced.');
       if (!entry.enabled) throw new HubError(`Server ${id} is OFF. Use hub_control enable if permitted.`);
       const deadline = AbortSignal.timeout(entry.config.timeoutMs ?? this.config.timeoutMs);
-      const combined = AbortSignal.any([this.shutdown.signal, deadline, ...(signal ? [signal] : [])]);
+      const combined = AbortSignal.any([this.shutdown.signal, entry.revoked.signal, deadline, ...(signal ? [signal] : [])]);
       combined.throwIfAborted();
       try { return await action(await this.connect(entry, combined), combined); }
       catch (error) {
@@ -205,7 +331,7 @@ export class Hub {
     return tools;
   }
 
-  async tools(id: string, options: { tool?: string; query?: string; offset?: number; limit?: number } = {}, signal?: AbortSignal) {
+  async tools(id: string, options: { tool?: string; query?: string; offset?: number; limit?: number; ifRevision?: string } = {}, signal?: AbortSignal) {
     return this.withClient(id, signal, async (client, requestSignal) => {
       const allow = this.entry(id).config.allowedTools;
       let tools = (await this.allTools(client, requestSignal)).filter(tool => !allow || allow.includes(tool.name));
@@ -213,13 +339,15 @@ export class Hub {
         const tool = tools.find(tool => tool.name === options.tool);
         if (!tool) throw new HubError('Tool not found or not allowed. Use hub_tools to list available names.');
         const skills = this.skillIds(this.entry(id), options.tool);
-        return { server: id, tool, ...(skills.length ? { skills } : {}) };
+        const revision = createHash('sha256').update(JSON.stringify({ tool, skills })).digest('hex').slice(0, 16);
+        if (options.ifRevision === revision) return { server: id, tool: options.tool, revision, unchanged: true };
+        return { server: id, tool, revision, ...(skills.length ? { skills } : {}) };
       }
       const query = (options.query ?? '').toLowerCase();
       tools = tools.filter(tool => `${tool.name} ${tool.description ?? ''}`.toLowerCase().includes(query));
       const offset = options.offset ?? 0;
-      const limit = options.limit ?? 20;
-      return { server: id, tools: tools.slice(offset, offset + limit).map(tool => ({ name: tool.name, description: tool.description?.slice(0, 300) })),
+      const limit = options.limit ?? this.context.listLimit;
+      return { server: id, tools: tools.slice(offset, offset + limit).map(tool => ({ name: tool.name, description: tool.description?.slice(0, this.context.summaryChars) })),
         total: tools.length, nextOffset: offset + limit < tools.length ? offset + limit : undefined };
     });
   }
@@ -237,11 +365,13 @@ export class Hub {
     const entry = this.entry(id);
     if (action === 'status') return this.summary(id, entry);
     if (action === 'start') return this.withClient(id, signal, async () => this.summary(id, entry));
+    if (action === 'disable') this.revoke(id, entry);
     return this.queue(entry, async () => {
       if (this.closing) throw new HubError('Hub is shutting down.');
       if (action === 'enable') {
         if (!entry.enabled && !entry.config.allowAgentEnable) throw new HubError('Agent enable is forbidden by configuration. Ask the user to change the global config.');
         entry.enabled = true;
+        if (entry.revoked.signal.aborted) entry.revoked = new AbortController();
       } else {
         if (action === 'disable') entry.enabled = false;
         await this.disconnect(entry);
@@ -253,6 +383,7 @@ export class Hub {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
+    this.results.forget();
     this.shutdown.abort();
     this.closePromise = Promise.allSettled([...this.entries.values()].map(entry => {
       clearTimeout(entry.timer);

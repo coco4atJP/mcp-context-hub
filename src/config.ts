@@ -3,12 +3,14 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
-const id = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
+export const idSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => !['__proto__', 'prototype', 'constructor'].includes(value), 'Reserved ID');
+const id = idSchema;
 const common = {
   description: z.string().max(500).default(''),
   tags: z.array(z.string().max(80)).max(30).default([]),
   enabled: z.boolean().default(true),
   allowAgentEnable: z.boolean().default(true),
+  allowAgentRemove: z.boolean().default(true),
   idleTimeoutMs: z.number().int().min(0).max(86_400_000).optional(),
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
   allowedTools: z.array(z.string()).optional(),
@@ -34,14 +36,27 @@ const http = z.object({
   }, 'Use HTTP(S) without URL credentials'),
   headers: z.record(z.string(), z.string()).default({}),
 }).strict();
+export const serverSchema = z.discriminatedUnion('transport', [stdio, http]);
+export const contextSchema = z.object({
+  maxChars: z.number().int().min(1024).max(20000).default(6000),
+  listLimit: z.number().int().min(1).max(20).default(5),
+  summaryChars: z.number().int().min(40).max(300).default(160),
+}).strict();
 export const configSchema = z.object({
   version: z.literal(1),
   idleTimeoutMs: z.number().int().min(0).max(86_400_000).default(300_000),
   timeoutMs: z.number().int().min(100).max(600_000).default(60_000),
   skills: z.record(id, absolutePath).default({}),
-  servers: z.record(id, z.discriminatedUnion('transport', [stdio, http])),
+  context: contextSchema.default({ maxChars: 6000, listLimit: 5, summaryChars: 160 }),
+  agent: z.object({
+    allowPublicHttp: z.boolean().default(true),
+    allowedHttpOrigins: z.array(z.url()).default([]),
+    maxServers: z.number().int().min(0).max(100).default(30),
+  }).strict().default({ allowPublicHttp: true, allowedHttpOrigins: [], maxServers: 30 }),
+  templates: z.record(id, serverSchema).default({}),
+  servers: z.record(id, serverSchema),
 }).strict().superRefine((config, ctx) => {
-  for (const [server, value] of Object.entries(config.servers)) {
+  for (const [server, value] of [...Object.entries(config.servers), ...Object.entries(config.templates)]) {
     const bindings = [value.skills, ...Object.values(value.toolSkills)].flat();
     for (const skill of new Set(bindings)) {
       if (!Object.hasOwn(config.skills, skill)) {
