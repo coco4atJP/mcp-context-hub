@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "skills": {
+    "blender-workflow": "/ABSOLUTE/PATH/TO/skills/blender-mcp-workflow",
+    "scene-design": "/ABSOLUTE/PATH/TO/skills/scene-design"
+  },
+  "servers": {
+    "blender": {
+      "transport": "stdio",
+      "command": "/ABSOLUTE/PATH/TO/YOUR/BLENDER_MCP_EXECUTABLE",
+      "description": "Blenderのシーン編集・レンダリング・3Dデザイン",
+      "tags": ["blender", "3d", "デザイン", "render"],
+      "skills": ["blender-workflow", "scene-design"]
+    }
+  }
+}

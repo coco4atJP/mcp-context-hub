@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "idleTimeoutMs": 300000,
+  "timeoutMs": 60000,
+  "servers": {
+    "demo": {
+      "transport": "stdio",
+      "description": "動作確認用。メッセージをそのまま返す。",
+      "tags": ["demo", "echo", "テスト"],
+      "enabled": true,
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/MCPServerService/examples/demo-server.mjs"]
+    },
+    "remote-example": {
+      "transport": "http",
+      "description": "URLを自分のStreamable HTTP MCPサーバーに置き換える。",
+      "enabled": false,
+      "allowAgentEnable": false,
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MY_MCP_TOKEN}" }
+    }
+  }
+}

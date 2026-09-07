@@ -1,0 +1,38 @@
+{
+  "name": "@nekon/mcp-context-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lazy MCP gateway with a small, fixed context footprint",
+  "type": "module",
+  "bin": {
+    "mcp-context-hub": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "examples",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "check": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coco4atJP/mcp-context-hub.git"
+  }
+}
