@@ -16,7 +16,7 @@ mcp-context-hub security reset
 | `allowStdio` | ON | ローカルstdio MCPを起動できる |
 | `allowHttp` | ON | HTTP MCPへ接続できる |
 | `allowAgentRegistration` | ON | AgentがURL・許可済みテンプレートを新規登録できる |
-| `allowAgentPublish` | OFF | Agentが共有フォルダーへMCP・Skillを公開／共有削除できる |
+| `allowAgentPublish` | OFF | Agentが同期先へMCP・Skillを公開／共有削除できる |
 | `requireSyncApproval` | ON | 受信した版ごとに所有者がハッシュを確認して承認する |
 | `requireHttps` | ON | Agent追加・共有URLはHTTPS必須。所有者が許可したオリジンは除外 |
 | `blockPrivateHttp` | ON | Agent追加・共有URLの非公開IP・特殊IPをDNS解決時にも拒否。所有者の接続定義・許可オリジンは除外 |
@@ -38,3 +38,5 @@ MCPの説明やSkill内の指示によってスイッチを変更することは
 共有データの形式検証・ハッシュ検証・パス制約、HTTPの別オリジン通信／リダイレクト拒否、応答サイズ制限は常に適用します。設定ファイルは置換前に検証し、他の設定項目を維持します。POSIXでは端末の状態ファイルを0600で作成します。Windowsのファイル保護は保存先のACLに従います（[Node.jsのファイルモード](https://nodejs.org/api/fs.html#file-modes)）。
 
 GUI自身の認証・ループバック限定・Host/Origin検証は、これらのスイッチをOFFにしても無効になりません。詳細は[GUIの安全性](gui.md#安全性と保存)を参照してください。
+
+LANペアリングは、TLS 1.3・証明書の固定・両端末の番号確認を常に使います。ペアリングした相手へMCP登録と付随Skillの履歴を共有し、受信した版の適用は `requireSyncApproval` に従います。LANの暗号化・相手の認証・直接LAN限定・受信形式の検証はスイッチでは無効になりません。自動公開は `sync.autoPublish` で別に設定できます。[LANの信頼境界](lan.md#保存と信頼境界)

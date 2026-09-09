@@ -7,6 +7,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GuiAdmin } from './gui-admin.js';
 import { HubError } from './errors.js';
+import { LanController } from './lan.js';
+import { installService, serviceStatus, uninstallService } from './lan-service.js';
+import { z } from 'zod';
 
 const execute = promisify(execFile);
 
@@ -28,9 +31,10 @@ async function pickFolder(): Promise<string | null> {
 }
 
 const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-export async function startGui(options: { configPath: string; port?: number; idleTimeoutMs?: number; pickFolder?: () => Promise<string | null> }) {
+export async function startGui(options: { configPath: string; port?: number; idleTimeoutMs?: number; pickFolder?: () => Promise<string | null>; resident?: boolean; onClose?: () => Promise<void> }) {
   const admin = new GuiAdmin(options.configPath);
   await admin.runtime.get();
+  const lan = new LanController(options.configPath);
   const token = randomBytes(32).toString('hex');
   const expectedAuth = Buffer.from('Bearer ' + token);
   let origin = '';
@@ -69,7 +73,14 @@ export async function startGui(options: { configPath: string; port?: number; idl
         if (auth.length !== expectedAuth.length || !timingSafeEqual(auth, expectedAuth)) { send(res, 401, { error: 'GUIを起動し直してください。認証情報がありません。' }); return; }
         if (closing) { send(res, 503, { error: 'GUIは終了中です。' }); return; }
         lastUse = Date.now();
-        if (req.method === 'GET' && url.pathname === '/api/state') send(res, 200, await admin.state());
+        if (req.method === 'GET' && url.pathname === '/api/state') send(res, 200, { ...await admin.state(), lan: await lan.status(), serviceInstalled: await serviceStatus(options.configPath) });
+        else if (req.method === 'GET' && url.pathname === '/api/health') send(res, 200, { ok: true, configPath: options.configPath });
+        else if (req.method === 'GET' && url.pathname === '/api/lan') send(res, 200, await lan.status());
+        else if (req.method === 'POST' && url.pathname === '/api/lan') send(res, 200, await lan.action(await body(req)));
+        else if (req.method === 'POST' && url.pathname === '/api/service') {
+          const value = z.object({ action: z.enum(['install', 'uninstall']) }).strict().parse(await body(req));
+          send(res, 200, await (value.action === 'install' ? installService : uninstallService)(options.configPath));
+        }
         else if (req.method === 'GET' && url.pathname === '/api/config') send(res, 200, await admin.readConfig());
         else if (req.method === 'GET' && url.pathname === '/api/inspect') send(res, 200, await admin.inspect(url.searchParams.get('server') ?? '', url.searchParams.get('revision') ?? undefined));
         else if (req.method === 'GET' && url.pathname === '/api/skills') send(res, 200, await admin.skills(url.searchParams.get('server') ?? ''));
@@ -80,6 +91,9 @@ export async function startGui(options: { configPath: string; port?: number; idl
           pickerActive = true;
           try { send(res, 200, { folder: await (options.pickFolder ?? pickFolder)() }); } finally { pickerActive = false; }
         } else if (req.method === 'POST' && url.pathname === '/api/close') {
+          await body(req); send(res, 200, { ok: true, background: lan.active || options.resident === true });
+          if (!lan.active && !options.resident) setImmediate(() => { void close(); });
+        } else if (req.method === 'POST' && url.pathname === '/api/stop') {
           await body(req); send(res, 200, { ok: true }); setImmediate(() => { void close(); });
         } else send(res, 404, { error: 'その操作はありません。' });
         return;
@@ -101,12 +115,13 @@ export async function startGui(options: { configPath: string; port?: number; idl
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Cannot bind GUI.');
   origin = `http://127.0.0.1:${address.port}`;
+  await lan.start();
   const idle = setInterval(() => {
-    if (!pickerActive && Date.now() - lastUse > (options.idleTimeoutMs ?? 300000)) void close();
+    if (!options.resident && !lan.active && !pickerActive && Date.now() - lastUse > (options.idleTimeoutMs ?? 300000)) void close();
   }, Math.min(options.idleTimeoutMs ?? 300000, 10000));
   idle.unref();
   function close(): Promise<void> {
-    return closing ??= (async () => { clearInterval(idle); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await admin.close(); })();
+    return closing ??= (async () => { clearInterval(idle); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await lan.close(); await admin.close(); await options.onClose?.(); })();
   }
-  return { origin, token, url: `${origin}/#token=${token}`, close, admin };
+  return { origin, token, url: `${origin}/#token=${token}`, close, admin, lan };
 }

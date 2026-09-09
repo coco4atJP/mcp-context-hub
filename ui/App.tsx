@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { GuiServer, GuiState } from '../src/gui-types.js';
-import { api, forgetToken, openSmallWindow } from './api.js';
+import { api, forgetToken, incomingInvitation, openSmallWindow } from './api.js';
 import { Dialog, Empty, FeedbackContext, Icon } from './components.js';
 import { AddServer, ServerDetail, Servers, type RunAction } from './Servers.js';
 import { ReviewSync, Sync } from './Sync.js';
@@ -8,10 +8,10 @@ import { ConfigEditor, Security } from './Security.js';
 
 type Modal = { kind: 'add' } | { kind: 'server'; server: GuiServer } | { kind: 'sync'; server: GuiState['sync']['servers'][number] } | { kind: 'config' } | { kind: 'confirm'; title: string; text: string; action: Record<string, unknown> };
 export function App() {
-  const [state, setState] = useState<GuiState | null>(null); const [tab, setTab] = useState('servers');
+  const [state, setState] = useState<GuiState | null>(null); const [tab, setTab] = useState(incomingInvitation ? 'sync' : 'servers');
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [closed, setClosed] = useState(false); const [modal, setModal] = useState<Modal | null>(null);
-  const report = useCallback((error: unknown) => setError(error instanceof Error ? error.message : '操作できませんでした。'), []);
+  const report = useCallback((error: unknown) => setError(error == null ? '' : error instanceof Error ? error.message : '操作できませんでした。'), []);
   const refresh = useCallback(async () => setState(await api<GuiState>('/api/state')), []);
   useEffect(() => {
     if (closed) return;
@@ -39,7 +39,7 @@ export function App() {
     <nav className="tabs" aria-label="管理画面">{[['servers', 'サーバー'], ['sync', '同期'], ['security', '安全性']].map(([value, label]) => <button key={value} aria-current={tab === value ? 'page' : undefined} className={tab === value ? 'active' : ''} disabled={closed} onClick={() => { setTab(value); setError(''); }}>{label}</button>)}</nav>
     <main>
       {error && !modal && <p className="error" role="alert">{error}</p>}
-      {closed ? <Empty title="GUIを終了しました">この画面を閉じて構いません。CLIとMCPの利用は続けられます。</Empty> : !state ? <p className="hint">設定を読み込んでいます…</p> : tab === 'servers' ? <Servers state={state} busy={busy} run={run} add={() => show({ kind: 'add' })} detail={server => show({ kind: 'server', server })} /> : tab === 'sync' ? <Sync state={state} busy={busy} run={run} review={server => show({ kind: 'sync', server })} report={report} /> : <Security state={state} busy={busy} run={run} confirm={confirm} edit={() => show({ kind: 'config' })} />}
+      {closed ? <Empty title="GUIを終了しました">この画面を閉じて構いません。{state?.lan?.enabled ? 'LAN同期はバックグラウンドで続きます。' : 'CLIとMCPの利用は続けられます。'}</Empty> : !state ? <p className="hint">設定を読み込んでいます…</p> : tab === 'servers' ? <Servers state={state} busy={busy} run={run} add={() => show({ kind: 'add' })} detail={server => show({ kind: 'server', server })} /> : tab === 'sync' ? <Sync state={state} busy={busy} run={run} refresh={refresh} review={server => show({ kind: 'sync', server })} report={report} /> : <Security state={state} busy={busy} run={run} confirm={confirm} edit={() => show({ kind: 'config' })} />}
     </main>
     <footer><span>ON/OFFはこの端末に保存</span><button className="quiet" disabled={busy || closed} onClick={() => { void shutdown(); }}>終了</button></footer>
     {notice && !modal && <div className="toast" role="status">{notice}</div>}

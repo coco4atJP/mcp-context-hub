@@ -1,8 +1,14 @@
 const fragment = new URLSearchParams(location.hash.slice(1));
 const supplied = fragment.get('token');
+export const incomingInvitation = fragment.get('pair') ?? '';
 if (supplied && /^[a-f0-9]{64}$/.test(supplied)) sessionStorage.setItem('mcp-context-hub-token', supplied);
 if (location.hash) history.replaceState(null, '', location.pathname);
 const token = sessionStorage.getItem('mcp-context-hub-token') ?? '';
+// Browsers may reuse a local tab for the custom URL handler; a new fragment must refresh auth and invitation state.
+window.addEventListener('hashchange', () => {
+  const next = new URLSearchParams(location.hash.slice(1));
+  if (next.has('pair') || /^[a-f0-9]{64}$/.test(next.get('token') ?? '')) location.reload();
+});
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {

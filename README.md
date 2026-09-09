@@ -2,7 +2,7 @@
 
 必要なMCPサーバーを、必要なときだけ使うためのローカルHubです。Node.js 22.12以上で動作します。
 
-Windows・macOS間で、選択したMCP登録とSkillを**共有フォルダー経由で同期**できます。専用サーバーは不要です。ON/OFF・認証・起動パス・安全性設定は端末ごとに管理します。[同期の設定手順](docs/sync.md) / [安全性の9項目のスイッチ](docs/security.md)
+Windows・macOS間で、**URL／QRでペアリングして同じLAN内で自動同期**できます。共有フォルダーや外部サーバーは不要です。既存の共有フォルダー同期も使えます。ON/OFF・認証・起動パス・安全性設定は端末ごとに管理します。[LANペアリング](docs/lan.md) / [共有フォルダー](docs/sync.md) / [安全性設定](docs/security.md)
 
 エージェントには常に **5個のHubツールだけ** を公開します。サーバーやSkillが増えても、この数は変わりません。サーバー検索 → 必要なSkill → 選択したツール定義 → 実行、という順番で情報を取得します。公式の [MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/) を使用しています。
 
@@ -13,6 +13,10 @@ Codex / MCPクライアント
        ├─ ローカルMCPプロセス（必要時に起動・未使用時に停止）
        └─ リモートMCPサーバー（Streamable HTTP・必要時に接続）
 ```
+
+## LANでつなぐ
+
+両端末にHubを入れ、`mcp-context-hub lan install` を1回実行して自動起動とURLを登録します。`mcp-context-hub gui` →「同期 → 端末を追加」でURL／QRを発行し、相手で開いて両画面の番号を確認すると同期を始めます。起動パス・認証は端末に残り、受信版は既定で承認待ちになります。[手順とCLI](docs/lan.md)
 
 ## セットアップ
 
@@ -27,7 +31,7 @@ cd mcp-context-hub
 npm ci
 npm test
 npm pack
-npm install --global ./nekon-mcp-context-hub-0.4.0.tgz
+npm install --global ./nekon-mcp-context-hub-0.5.0.tgz
 mcp-context-hub init
 mcp-context-hub install-skill
 mcp-context-hub config-path
@@ -380,4 +384,4 @@ npm test
 
 GUIテストはループバック認証・Host/Origin検証・設定の競合検知・Skill添付・同期承認・稼働中MCPへの設定反映・終了を検証します。画面は実データをAPIから読み込むReact UIで、ビルド済みファイルを配布します。
 
-同期テストは独立した2端末分の状態と共有フォルダーを作り、受信承認・端末別の起動設定／ON/OFF・Skill転送・同時編集・配信順序の逆転・オフライン・改ざん・CLI・実際のMCP経由での再起動不要の取り込みを検証します。GitHub ActionsではWindows・macOS・Linux、Node.js 22／24で同じテストを実行します。実際のLANやクラウドの転送機構はテスト環境に含みません。
+同期テストは独立した2端末分の状態と共有フォルダーを作り、受信承認・端末別の起動設定／ON/OFF・Skill転送・同時編集・配信順序の逆転・オフライン・改ざん・CLI・実際のMCP経由での再起動不要の取り込みを検証します。GitHub ActionsではWindows・macOS・Linux、Node.js 22／24で同じテストを実行します。LANテストは実際のTLS通信でペアリング・両側確認・証明書不一致・失効・Skill転送・不正レコード拒否を検証します。CIはループバックを注入した独立端末で実施し、別の物理PC間のWi-Fi・OS権限・クラウド転送機構は含みません。

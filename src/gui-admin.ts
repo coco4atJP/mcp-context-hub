@@ -146,7 +146,7 @@ export class GuiAdmin {
         const folder = await realpath(operation.folder);
         assertLocalConfig(await realpath(this.path), folder);
         await SyncManager.initialize(folder);
-        await editSettings(this.path, data => { data.sync = { ...(data.sync as object ?? {}), folder }; }, operation.revision);
+        await editSettings(this.path, data => { data.sync = { ...(data.sync as object ?? {}), mode: 'folder', folder }; }, operation.revision);
       } else if (operation.action === 'disconnect') {
         await editSettings(this.path, data => { const value = { ...(data.sync as Record<string, unknown> ?? {}) }; delete value.folder; data.sync = value; }, operation.revision);
       } else if (operation.action === 'pull') await sync.pull(true);

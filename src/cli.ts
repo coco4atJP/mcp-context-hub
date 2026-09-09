@@ -1,38 +1,51 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { configPath, initConfig, loadConfig } from './config.js';
+import { configPath, initConfig, loadConfig, urlHandlerConfigPath } from './config.js';
 import { createServer } from './server.js';
 import { installHubSkill, SkillStore } from './skills.js';
 import { assertLocalConfig } from './settings.js';
 import { settingsCommand } from './cli-settings.js';
 import { HubRuntime } from './runtime.js';
-import { startGui } from './gui.js';
 import { launchGui } from './gui-launch.js';
+import { managedGui } from './daemon.js';
+import { lanCommand } from './cli-lan.js';
+import { parseInvitation } from './lan-network.js';
 
 async function main() {
+  // Custom URL handlers must never let shell/registry quoting add CLI flags or select another config.
+  if (process.argv[2] === 'handle-url') {
+    if (process.argv.length !== 4) throw new Error('Invalid pairing URL invocation.');
+    parseInvitation(process.argv[3]!);
+    await launchGui(urlHandlerConfigPath(), undefined, { invitation: process.argv[3] }); return;
+  }
   const { values, positionals } = parseArgs({ options: { config: { type: 'string' }, 'skills-dir': { type: 'string' }, help: { type: 'boolean', short: 'h' },
-    folder: { type: 'string' }, server: { type: 'string' }, revision: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' } }, allowPositionals: true });
+    folder: { type: 'string' }, server: { type: 'string' }, revision: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' }, url: { type: 'string' }, session: { type: 'string' }, peer: { type: 'string' } }, allowPositionals: true });
   if (values.help) {
     console.log('mcp-context-hub [serve|init|check|config-path] [--config /absolute/config.json]\nmcp-context-hub install-skill [--skills-dir /path/to/skills]\nDefault command: serve. Config: MCP_HUB_CONFIG or ~/.config/mcp-context-hub/config.json');
     console.log('mcp-context-hub gui [--no-open] [--port PORT]\nmcp-context-hub sync connect --folder EXISTING_ABSOLUTE_PATH\nmcp-context-hub sync disconnect|status\nmcp-context-hub sync publish|inspect|remove --server ID\nmcp-context-hub sync approve|resolve --server ID --revision SHA256\nmcp-context-hub security show|reset\nmcp-context-hub security set KEY on|off\nAll commands accept --config. Sync uses an existing shared folder. GUI opens locally; --no-open runs in the foreground. Owner config changes apply on the next MCP request.');
+    console.log('mcp-context-hub lan start|stop|status|disable|install|uninstall|invite|cancel\nmcp-context-hub lan pair --url INVITATION_URL\nmcp-context-hub lan confirm --session ID\nmcp-context-hub lan unpair --peer FINGERPRINT\nLAN pairing uses a one-time URL and confirmation on both devices. install registers login startup and URL handling on macOS/Windows. daemon runs the worker in the foreground.');
     return;
   }
   const command = positionals[0] ?? 'serve';
-  if (!['sync', 'security'].includes(command) && positionals.length > 1) throw new Error('Expected at most one command. Use --help.');
+  if (!['sync', 'security', 'lan'].includes(command) && positionals.length > 1) throw new Error('Expected at most one command. Use --help.');
   if (values['skills-dir'] && command !== 'install-skill') throw new Error('--skills-dir is only valid for install-skill.');
   if (command !== 'sync' && (values.folder || values.server || values.revision)) throw new Error('Sync flags require the sync command.');
-  if (command !== 'gui' && (values.port !== undefined || values['no-open'])) throw new Error('--port and --no-open require gui.');
+  if (!['gui', 'daemon'].includes(command) && (values.port !== undefined || values['no-open'])) throw new Error('--port and --no-open require gui.');
+  if (command !== 'lan' && (values.url || values.session || values.peer)) throw new Error('--url, --session and --peer require lan.');
   if (command === 'install-skill') { console.log(`Installed ${await installHubSkill(values['skills-dir'])}`); return; }
   const path = configPath(values.config);
-  if (command === 'gui') {
-    const port = values.port === undefined ? 0 : Number(values.port);
-    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be 0–65535.');
-    if (!values['no-open']) { console.log(`Context Hub GUI: ${await launchGui(path, port)}`); return; }
-    const gui = await startGui({ configPath: path, port });
-    if (process.send) process.send({ url: gui.url }); else console.log(`Context Hub GUI: ${gui.url}`);
-    process.once('SIGINT', () => { void gui.close(); });
-    process.once('SIGTERM', () => { void gui.close(); });
+  if (await lanCommand(path, positionals, values)) return;
+  if (command === 'gui' || command === 'daemon') {
+    const port = values.port === undefined ? undefined : Number(values.port);
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new Error('Port must be 0–65535.');
+    if (command === 'gui' && !values['no-open']) { console.log(`Context Hub GUI: ${await launchGui(path, port)}`); return; }
+    const { gui, url } = await managedGui(path, port, command === 'daemon');
+    if (process.send) process.send({ url }); else console.log(`Context Hub GUI: ${url}`);
+    if (gui) {
+      process.once('SIGINT', () => { void gui.close(); });
+      process.once('SIGTERM', () => { void gui.close(); });
+    }
     return;
   }
   if (await settingsCommand(path, positionals, values)) return;

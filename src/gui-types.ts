@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import type { SyncManager } from './sync.js';
+import type { LanStatus } from './lan.js';
 
 export type GuiServer = { server: string; description: string; enabled: boolean; source: 'configured' | 'agent' | 'sync'; skillCount?: number; agentCanEnable?: boolean; locallyDefined?: boolean };
 export type GuiState = {
@@ -9,6 +10,8 @@ export type GuiState = {
   skills: { id: string; description: string }[];
   security: Config['security'];
   sync: Awaited<ReturnType<SyncManager['status']>> & { folder?: string };
+  lan?: LanStatus;
+  serviceInstalled?: boolean;
 };
 
 export const securityLabels = {

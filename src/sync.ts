@@ -120,18 +120,20 @@ export class SyncManager {
   private error?: 'offline' | 'invalid';
   private snapshot?: Snapshot;
   private readyCache = new Map<string, SyncedServer>();
+  private readonly storageFolder?: string;
 
   constructor(private readonly config: Config, configPath: string) {
     if (config.sync.folder) assertLocalConfig(configPath, config.sync.folder);
-    const scope = digest(config.sync.folder ?? 'disconnected').slice(0, 16);
+    this.storageFolder = config.sync.mode === 'lan' ? configPath + '.lan-data' : config.sync.folder;
+    const scope = digest(this.storageFolder ?? 'disconnected').slice(0, 16);
     this.store = new LocalStore(configPath + `.sync-${scope}.json`, input => stateSchema.parse(input),
       () => ({ version: 1, device: randomUUID(), accepted: {}, observed: {}, blocked: false }));
     this.cache = configPath + '.sync-cache';
   }
 
   private folder(): string {
-    if (!this.config.sync.folder) throw new HubError('Sync folder is not configured. Owner: mcp-context-hub sync connect --folder PATH.');
-    return join(this.config.sync.folder, 'mcp-context-hub-v1');
+    if (!this.storageFolder) throw new HubError('Sync is not configured. Open the GUI Sync tab or use mcp-context-hub lan start.');
+    return join(this.storageFolder, 'mcp-context-hub-v1');
   }
 
   static async initialize(folder: string): Promise<void> {
@@ -159,7 +161,7 @@ export class SyncManager {
 
   private async scan(): Promise<Snapshot> {
     const root = this.folder();
-    await directory(this.config.sync.folder!);
+    await directory(this.storageFolder!);
     await directory(root);
     await directory(join(root, 'changes'));
     const names: string[] = [];
@@ -208,9 +210,13 @@ export class SyncManager {
   async pull(force = false): Promise<void> {
     this.state = await this.store.read();
     if (this.state.blocked) this.error = 'invalid';
-    if (!this.config.sync.folder || (!force && Date.now() - this.lastPoll < this.config.sync.pollIntervalMs)) return;
+    if (!this.storageFolder || (!force && Date.now() - this.lastPoll < this.config.sync.pollIntervalMs)) return;
     this.lastPoll = Date.now();
     try {
+      if (this.config.sync.mode === 'lan') {
+        await mkdir(this.storageFolder, { recursive: true, mode: 0o700 });
+        await SyncManager.initialize(this.storageFolder);
+      }
       const snapshot = await this.scan();
       this.snapshot = snapshot;
       this.state = await this.store.mutate(state => {
@@ -327,7 +333,7 @@ export class SyncManager {
       servers.push({ server: id, status, ...(revision ? { revision } : { heads: observation.heads }),
         ...(change?.bundle ? { description: change.bundle.description.slice(0, 160), skills: Object.keys(change.bundle.packages).length } : {}) });
     }
-    return { connected: !!this.config.sync.folder, ...(this.error ? { error: this.error } : {}),
+    return { connected: !!this.storageFolder, mode: this.config.sync.mode, ...(this.error ? { error: this.error } : {}),
       requireApproval: this.config.security.requireSyncApproval, agentCanPublish: this.config.security.allowAgentPublish,
       servers, total: all.length, ...(offset + limit < all.length ? { nextOffset: offset + limit } : {}) };
   }
@@ -361,7 +367,7 @@ export class SyncManager {
     const text = JSON.stringify(change) + '\n';
     if (Buffer.byteLength(text) > MAX_CHANGE) throw new HubError('Shared revision exceeds 2 MiB. Split the attached skills.');
     const revision = digest(text);
-    await directory(this.config.sync.folder!);
+    await directory(this.storageFolder!);
     await directory(this.folder());
     await directory(join(this.folder(), 'changes'));
     await atomicWrite(join(this.folder(), 'changes', revision + '.json'), text);
@@ -376,6 +382,11 @@ export class SyncManager {
     const snapshot = this.requireSnapshot();
     const observation = snapshot.observed[id];
     if (observation && (observation.incomplete || observation.heads.length !== 1)) throw new HubError('Resolve the sync conflict or incomplete history before publishing.');
+    return this.commit(id, await this.bundle(id, config, paths, template), observation?.heads ?? []);
+  }
+
+  /** Portable source fingerprinting lets the LAN worker publish only actual local edits. */
+  async bundle(id: string, config: ServerConfig, paths: Record<string, string>, template?: string): Promise<Bundle> {
     const packages: Bundle['packages'] = {};
     const aliases: Record<string, string> = {};
     const accepted = this.state?.accepted[id];
@@ -392,7 +403,37 @@ export class SyncManager {
     const bundle = bundleSchema.parse({ connection: config.transport === 'http' ? { url: config.url } : { template: template ?? id },
       description: config.description, tags: config.tags, allowedTools: config.allowedTools, skills: config.skills.map(originalId),
       toolSkills: Object.fromEntries(Object.entries(config.toolSkills).map(([tool, skills]) => [tool, skills.map(originalId)])), packages });
-    return this.commit(id, bundle, observation?.heads ?? []);
+    validateChange({ version: 1, server: id, device: randomUUID(), parents: [], bundle });
+    if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_CHANGE - 10000) throw new HubError('Shared revision exceeds 2 MiB.');
+    return bundle;
+  }
+
+  /** LAN is only a transport for the same immutable, strictly validated revisions. */
+  async inventory(): Promise<string[]> {
+    await this.pull(true);
+    return [...this.requireSnapshot().changes.keys()].sort();
+  }
+
+  async exportRevision(revision: string): Promise<string> {
+    revisionSchema.parse(revision);
+    const text = await readText(join(this.folder(), 'changes', revision + '.json'), MAX_CHANGE);
+    if (digest(text) !== revision) throw new HubError('Revision integrity check failed.');
+    validateChange(JSON.parse(text));
+    return text;
+  }
+
+  async importRevision(revision: string, text: string): Promise<void> {
+    revisionSchema.parse(revision);
+    if (Buffer.byteLength(text) > MAX_CHANGE || digest(text) !== revision) throw new HubError('Invalid LAN revision.');
+    validateChange(JSON.parse(text));
+    // Validate the entire local store before accepting another record; all limits also apply on the wire.
+    await this.pull(true);
+    const snapshot = this.requireSnapshot();
+    if (snapshot.changes.has(revision)) return;
+    let bytes = Buffer.byteLength(text);
+    for (const key of snapshot.changes.keys()) bytes += Buffer.byteLength(await this.exportRevision(key));
+    if (snapshot.changes.size >= MAX_HISTORY || bytes > MAX_HISTORY_BYTES) throw new HubError('Sync history limit reached.');
+    await atomicWrite(join(this.folder(), 'changes', revision + '.json'), text);
   }
 
   async remove(id: string): Promise<string> {

@@ -168,7 +168,7 @@ export class Hub {
     if (!this.sync) throw new HubError('Sync is unavailable in this Hub. Use the installed CLI.');
     if (operation === 'status') return this.sync.status(offset, limit);
     if (operation === 'pull') { await this.sync.pull(true); await this.refresh(); return this.sync.status(offset, limit); }
-    if (!owner && !this.config.security.allowAgentPublish) throw new HubError('Owner policy disables agent publishing to the shared folder. Local CLI sync publish/remove is available.');
+    if (!owner && !this.config.security.allowAgentPublish) throw new HubError('Owner policy disables agent publishing. Local CLI sync publish/remove is available.');
     if (!server) throw new HubError('Sync publish/remove requires server.');
     if (operation === 'remove') {
       const entry = this.entries.get(server);
@@ -361,7 +361,7 @@ export class Hub {
   private async connect(entry: Entry, signal: AbortSignal): Promise<Client> {
     if (entry.client) return entry.client;
     entry.state = 'starting';
-    const client = new Client({ name: 'mcp-context-hub', version: '0.4.0' }, { capabilities: {} });
+    const client = new Client({ name: 'mcp-context-hub', version: '0.5.0' }, { capabilities: {} });
     let transport: Transport | undefined;
     try {
       transport = this.transport(entry.config, entry);

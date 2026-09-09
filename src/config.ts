@@ -62,10 +62,12 @@ export const configSchema = z.object({
   context: contextSchema.default({ maxChars: 6000, listLimit: 5, summaryChars: 160 }),
   security: securitySchema.default(securityDefaults),
   sync: z.object({
+    mode: z.enum(['folder', 'lan']).default('folder'),
+    autoPublish: z.boolean().default(true),
     folder: absolutePath.optional(),
     pollIntervalMs: z.number().int().min(1000).max(3_600_000).default(10000),
     bindings: z.record(id, id).default({}),
-  }).strict().default({ pollIntervalMs: 10000, bindings: {} }),
+  }).strict().default({ mode: 'folder', autoPublish: true, pollIntervalMs: 10000, bindings: {} }),
   agent: z.object({
     allowPublicHttp: z.boolean().default(true),
     allowedHttpOrigins: z.array(z.url()).default([]),
@@ -89,6 +91,9 @@ export type ServerConfig = Config['servers'][string];
 export function configPath(explicit?: string): string {
   return resolve(explicit ?? process.env.MCP_HUB_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'mcp-context-hub', 'config.json'));
 }
+
+/** OS URL handlers always open this fixed per-user profile, independent of inherited environment. */
+export function urlHandlerConfigPath(): string { return join(homedir(), '.config', 'mcp-context-hub', 'config.json'); }
 
 export async function loadConfig(path: string): Promise<Config> {
   let raw: string;

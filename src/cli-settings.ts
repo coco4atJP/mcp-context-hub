@@ -26,13 +26,13 @@ export async function settingsCommand(path: string, args: string[], flags: { fol
     const actualFolder = await realpath(folder);
     assertLocalConfig(await realpath(path), actualFolder);
     await SyncManager.initialize(actualFolder);
-    await editSettings(path, data => { data.sync = { ...(data.sync as object ?? {}), folder: actualFolder }; });
+    await editSettings(path, data => { data.sync = { ...(data.sync as object ?? {}), mode: 'folder', folder: actualFolder }; });
     print({ folder: actualFolder, appliesOnNextRequest: true });
     return true;
   }
   if (operation === 'disconnect') {
     if (folder || server || revision) throw new Error('Use sync disconnect without additional flags.');
-    await editSettings(path, data => { const sync = { ...(data.sync as Record<string, unknown> ?? {}) }; delete sync.folder; data.sync = sync; });
+    await editSettings(path, data => { const sync = { ...(data.sync as Record<string, unknown> ?? {}) }; delete sync.folder; sync.mode = 'folder'; data.sync = sync; });
     print({ connected: false, appliesOnNextRequest: true }); return true;
   }
   if (folder) throw new Error('--folder is only valid for sync connect.');

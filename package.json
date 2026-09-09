@@ -1,6 +1,6 @@
 {
   "name": "@nekon/mcp-context-hub",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "A lazy MCP gateway with a small, fixed context footprint",
   "type": "module",
@@ -26,14 +26,20 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "ipaddr.js": "^2.5.0",
+    "multicast-dns": "^7.2.5",
+    "selfsigned": "^5.5.0",
     "undici": "^7.29.1",
     "yaml": "^2.9.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/multicast-dns": "^7.2.4",
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^5.9.3",
