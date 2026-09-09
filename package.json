@@ -1,6 +1,6 @@
 {
   "name": "@nekon/mcp-context-hub",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A lazy MCP gateway with a small, fixed context footprint",
   "type": "module",
@@ -10,6 +10,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs",
     "examples",
     "skills"
   ],

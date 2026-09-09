@@ -5,7 +5,7 @@ import { HubError, type Hub } from './hub.js';
 import { jsonResult } from './context.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-export const actionSchema = z.enum(['help', 'status', 'enable', 'disable', 'start', 'stop', 'add', 'remove', 'focus', 'context', 'result', 'forget']);
+export const actionSchema = z.enum(['help', 'status', 'enable', 'disable', 'start', 'stop', 'add', 'remove', 'focus', 'context', 'result', 'forget', 'sync', 'security']);
 type Action = z.infer<typeof actionSchema>;
 const empty = z.object({}).strict();
 const schemas = {
@@ -18,6 +18,9 @@ const schemas = {
     summaryChars: z.number().int().min(40).max(300).optional() }).strict(),
   result: z.object({ resultId: z.uuid(), offset: z.number().int().min(0).optional(), pointer: z.string().max(1000).optional(), native: z.boolean().optional() }).strict(),
   forget: empty,
+  security: empty,
+  sync: z.object({ operation: z.enum(['status', 'pull', 'publish', 'remove']).default('status'),
+    offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(20).optional() }).strict(),
 };
 const purposes: Record<Action, string> = {
   help: 'Get operation schemas and add policy without starting servers.', status: 'Read server state.',
@@ -29,17 +32,24 @@ const purposes: Record<Action, string> = {
   context: 'Inspect/change output budgets for this session. Character counts, not exact tokens. Cannot erase conversation history.',
   result: 'Read cached output pages or a JSON Pointer without repeating the operation. native=true explicitly returns the full original result, bypassing the character budget.',
   forget: 'Drop cached results for server, or all results if server is omitted. Does not erase conversation history.',
+  sync: 'Read/pull shared-folder revisions without startup. publish/remove requires server and owner permission to share. Conflicts and approval are resolved through the local CLI. No credentials, paths or ON/OFF state are shared.',
+  security: 'Read local security switches. Changes are owner-only via mcp-context-hub security set KEY on|off, effective after restarting the Hub.',
 };
 
 export async function control(hub: Hub, action: Action, server: string | undefined, input: unknown, signal?: AbortSignal): Promise<CallToolResult> {
   const parsed = schemas[action].safeParse(input);
   if (!parsed.success) throw new HubError(`Invalid ${action} options. Use hub_control help with options.action=${action}.`);
   const data = parsed.data as Record<string, unknown>;
-  if (['help', 'focus', 'context', 'result'].includes(action) && server !== undefined) throw new HubError(`${action} does not take server.`);
+  if (['help', 'focus', 'context', 'result', 'security'].includes(action) && server !== undefined) throw new HubError(`${action} does not take server.`);
   if (action === 'help') {
     const requested = data.action as Action | undefined;
     return jsonResult(requested ? { action: requested, purpose: purposes[requested], optionsSchema: z.toJSONSchema(schemas[requested]),
       ...(requested === 'add' ? { policy: hub.registrationPolicy() } : {}) } : { actions: purposes });
+  }
+  if (action === 'security') return jsonResult(hub.securityPolicy());
+  if (action === 'sync') {
+    if (['status', 'pull'].includes(data.operation as string) && server) throw new HubError('Sync status/pull does not take server.');
+    return jsonResult(await hub.syncControl(data.operation as 'status' | 'pull' | 'publish' | 'remove', server, data.offset as number, data.limit as number | undefined));
   }
   if (action === 'context') {
     const preset = data.preset;

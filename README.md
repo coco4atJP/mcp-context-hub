@@ -2,6 +2,8 @@
 
 必要なMCPサーバーを、必要なときだけ使うためのローカルHubです。Node.js 22以上で動作します。
 
+Windows・macOS間で、選択したMCP登録とSkillを**共有フォルダー経由で同期**できます。専用サーバーは不要です。ON/OFF・認証・起動パス・安全性設定は端末ごとに管理します。[同期の設定手順](docs/sync.md) / [安全性の9項目のスイッチ](docs/security.md)
+
 エージェントには常に **5個のHubツールだけ** を公開します。サーバーやSkillが増えても、この数は変わりません。サーバー検索 → 必要なSkill → 選択したツール定義 → 実行、という順番で情報を取得します。公式の [MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/) を使用しています。
 
 ```text
@@ -25,7 +27,7 @@ cd mcp-context-hub
 npm ci
 npm test
 npm pack
-npm install --global ./nekon-mcp-context-hub-0.2.0.tgz
+npm install --global ./nekon-mcp-context-hub-0.3.0.tgz
 mcp-context-hub init
 mcp-context-hub install-skill
 mcp-context-hub config-path
@@ -95,7 +97,7 @@ GUIアプリではシェルとPATHが異なる場合があるため、Nodeの絶
 | `hub_skill` | 選択したSkill本文、または参照先のテキストファイルを取得 | しない |
 | `hub_tools` | 短い一覧、または指定した1ツールの完全な定義 | 必要時に起動 |
 | `hub_call` | 指定ツールの実行、画像などもMCP形式のまま返す | 必要時に起動 |
-| `hub_control` | 追加・削除・ON/OFF・利用先の選択・応答量・保管結果の管理 | `start` の場合のみ |
+| `hub_control` | 追加・削除・ON/OFF・同期・安全性の確認・応答量・保管結果の管理 | `start` の場合のみ |
 
 ```text
 hub_catalog({"query":"テスト"})
@@ -134,6 +136,8 @@ hub_control({"action":"remove","server":"docs"})
 | `context` | 応答の文字数・一覧件数・説明の長さを調整。空optionsで現在値とキャッシュ使用量 |
 | `result` | 大きな応答を再実行せずに取得。`resultId`、任意で`pointer`・`offset` |
 | `forget` | `server` の保管済み結果を削除。省略で全て削除 |
+| `sync` | 共有フォルダーの状態確認・受信、許可された公開／共有削除。引数はhelpで取得 |
+| `security` | この端末の安全性スイッチを確認。変更は所有者のローカルCLI |
 
 `enable`・`disable`・`start`・`stop`・`status` は従来どおり `server` を指定します。管理操作の `options` はコードで厳密に検証され、未定義の項目は拒否します。
 
@@ -164,7 +168,7 @@ hub_control({"action":"remove","server":"docs"})
 hub_control({"action":"add","server":"blender-task","options":{"template":"blender"}})
 ```
 
-テンプレートには通常のサーバー設定と同じ `env`・`allowedTools`・`skills`・`toolSkills` 等を指定できます。エージェントが追加時に変更できるのは説明・タグ・初期ON/OFF・Skill ID・ツール許可リストです。許可リストをテンプレートより広げる変更は拒否します。コマンド・引数・環境変数・ヘッダー・権限ルールはAgent経由で変更できません。テンプレートの許可リストを省略した場合は、そのMCPの全ツールが利用可能です。
+テンプレートには通常のサーバー設定と同じ `env`・`allowedTools`・`skills`・`toolSkills` 等を指定できます。エージェントが追加時に変更できるのは説明・タグ・初期ON/OFF・Skill ID・ツール許可リストです。初期設定では許可リストをテンプレートより広げる変更を拒否します。コマンド・引数・環境変数・ヘッダー・権限ルールはAgent経由で変更できません。テンプレートの許可リストを省略した場合は、そのMCPの全ツールが利用可能です。
 
 初期設定で自由に追加できるURLは公開HTTPSです。次の制限を設けています。
 
@@ -176,13 +180,36 @@ hub_control({"action":"add","server":"blender-task","options":{"template":"blend
 
 これはHubの権限境界です。MCPプロセス自体をOSサンドボックスへ隔離するものではなく、所有者が許可したローカルMCPはその実行ユーザーの権限で動きます。公開HTTPS先の信頼性や、Agentが送るツール引数の機密性を自動判定する機能もありません。ツールの説明やSkillに書かれた指示で、この権限ルールを変更することはできません。
 
-### 登録の保存と同期
+### 同一端末の登録保存
 
-Agent追加分は、設定ファイル名に `.agents.json` を付けたファイルへ保存します。既定では `~/.config/mcp-context-hub/config.json.agents.json` です。所有者の `config.json` は書き換えません。書き込みロックとファイルの置き換えで並行更新を処理し、ファイル権限を0600にします。
+Agent追加分は、設定ファイル名に `.agents.json` を付けたファイルへ保存します。既定では `~/.config/mcp-context-hub/config.json.agents.json` です。所有者の `config.json` は書き換えません。書き込みロックとファイルの置き換えで並行更新を処理します。POSIXではファイル権限を0600にし、Windowsでは保存先のACLを利用します。
 
 同じ設定を使うHubは、次のツール要求で登録を同期します。追加されたMCPは再起動なしで見つけられます。削除された接続先はその時点で切断します。保存されたAgent登録も、読み込み時に所有者の現在のポリシーで検証します。無効な登録やポリシー違反がある場合は処理を拒否し、所有者による修正を必要とします。
 
-ON/OFF・focus・出力量・結果キャッシュはHubセッションごとです。共有登録からの削除でも、別Hubの実行中の要求を即時に取り消す保証はありません。所有者の `servers` をremoveした場合は、そのセッションから除外するだけなので、次のHub起動時には復元されます。Agent登録用ファイルへ手動編集する際はHubを停止してください。書き込み中の異常終了で `.lock` が残った場合は、書き込みプロセスが残っていないことを確認してから所有者が取り除きます。
+**v0.3から、CLIで起動したHubのON/OFFは `.device.json` に端末別で保存**します。同じ端末・configの別Hubにも次の要求で反映します。`focus` が行ったON/OFFも保存します。新規追加分に対するfocusの選択条件・出力量・結果キャッシュはセッションごとです。別Hubの実行中の要求を即時に取り消す保証はありません。所有者の `servers` をremoveした場合は、そのセッションから除外するだけなので、次のHub起動時には復元されます。Agent登録用ファイルへ手動編集する際はHubを停止してください。書き込み中の異常終了で `.lock` が残った場合は、書き込みプロセスが残っていないことを確認してから所有者が取り除きます。
+
+### Windows / macOS間の同期
+
+両端末で、同じ内容が見える共有フォルダーを指定します。LAN共有でも、既存のクラウド同期フォルダーでも使えます。
+
+```sh
+mcp-context-hub sync connect --folder "/ABSOLUTE/PATH/TO/SHARED_FOLDER"
+mcp-context-hub sync publish --server blender
+```
+
+受信側では `sync status`・`sync inspect --server blender` で内容を確認し、`sync approve --server blender --revision SHA256` で版を承認します。stdio MCPの実行環境は端末の同名テンプレートへ結び付けます。新規受信は初期OFFです。承認済みの変更はHubを再起動せずに反映します。接続先フォルダーやテンプレートの設定変更には再起動が必要です。
+
+同時編集は競合として検出し、明示的に採用する版を選びます。同期管理のサーバーは `sync remove` で共有削除し、この端末だけ止める場合は `disable` を使います。詳細とWindowsの設定例は [同期の手順](docs/sync.md) を参照してください。
+
+### 安全性のカスタマイズ
+
+```sh
+mcp-context-hub security show
+mcp-context-hub security set allowAgentPublish on
+mcp-context-hub security set requireSyncApproval off
+```
+
+共有先へのAgentによる公開と、受信版の承認要求は別々のスイッチです。HTTP／stdio、HTTPS必須、プライベートIP制限、ツール許可リスト、環境変数継承も個別に設定できます。各端末の所有者が設定し、Hub再起動後に反映します。初期値と意味は [安全性設定](docs/security.md) を参照してください。
 
 ### 長い結果を必要な部分だけ読む
 
@@ -278,18 +305,18 @@ Skill本文の編集は次回の読み取りに反映されます。登録パス
 
 | 操作・設定 | 意味 |
 |---|---|
-| `enable` | このHubセッションで利用可能にする。まだ起動しない |
+| `enable` | この端末で利用可能にし、ONを保存する。まだ起動しない |
 | `disable` | 後続の定義・Skill本文の取得と実行を拒否し、接続を閉じる |
 | `start` | ONのサーバーをすぐ起動・接続する |
 | `stop` | 接続を閉じる。ONのままなので次の利用時に再起動する |
 | `status` | 状態を確認する。アイドルタイマーは延長しない |
-| `enabled: false` | Hub起動時の初期状態をOFFにする |
+| `enabled: false` | 保存された端末状態がない場合の初期状態をOFFにする |
 | `allowAgentEnable: false` | OFFになったサーバーをエージェントがONへ戻すことを禁止する |
 | `idleTimeoutMs` | 未使用時の停止までの時間。既定5分。`0` なら自動停止なし |
 | `timeoutMs` | 起動と各操作の制限時間。既定60秒。最大10分 |
 | `allowedTools` | 利用できるツール名の許可リスト。省略は全て、空配列は全て拒否 |
 
-ON/OFFは**会話側のHubプロセス単位**です。グローバルに共有するのは設定ファイルと実行プログラムです。複数クライアントが接続した場合、それぞれ独立したHubと子プロセスが動きます。全クライアントで単一の子プロセスを共有する常駐デーモンではありません。
+CLIのON/OFFは**端末とconfig単位**です。複数クライアントが接続した場合、それぞれ独立したHubと子プロセスが動きます。状態は次の要求で確認します。全クライアントで単一の子プロセスを共有する常駐デーモンではありません。ライブラリとして `new Hub(config)` を直接使う場合は従来どおりメモリ内で、`DeviceState` を渡すと永続化できます。
 
 同一サーバーへの実行要求は順番に処理します。OFFやremoveは実行中の要求へキャンセルを送り、接続を閉じます。別サーバーは並行利用できます。アイドル停止は実行完了から計測します。Hub終了時も実行中の要求をキャンセルし、SDKのstdio終了処理で管理下の子プロセスを停止します。HTTPではセッション終了を試みて接続を閉じますが、リモートのサーバープロセス自体は停止しません。
 
@@ -297,7 +324,7 @@ ON/OFFは**会話側のHubプロセス単位**です。グローバルに共有�
 
 ## 認証と起動設定
 
-stdioの `command` は実行ファイル名または絶対パス、`args` は引数配列です。シェルを介さず起動します。相対ファイルを扱う接続先には絶対パスの `cwd` を指定してください。
+stdioの `command` は実行ファイル名または絶対パス、`args` は引数配列です。Hubでシェル式を評価せず、SDKへコマンドと引数を分けて渡します。相対ファイルを扱う接続先には絶対パスの `cwd` を指定してください。
 
 ```json
 {
@@ -310,7 +337,7 @@ stdioの `command` は実行ファイル名または絶対パス、`args` は引
 }
 ```
 
-SDK既定のHOME・PATHなどの基本環境に加え、明示した `env` と `inheritEnv` だけを子プロセスへ渡します。`env`・`args`・HTTPの `headers` で `${ENV_NAME}` を展開できます。値はHubプロセスの環境から読みます。未定義なら接続時に失敗します。`.env` の自動読み込みやOAuthログイン画面の起動は行いません。
+初期設定ではSDK既定のHOME・PATHなどの基本環境に加え、明示した `env` と `inheritEnv` だけを子プロセスへ渡します。`security.inheritProcessEnv: true` は環境全体の継承を有効にします。`env`・`args`・HTTPの `headers` で `${ENV_NAME}` を展開できます。値はHubプロセスの環境から読みます。未定義なら接続時に失敗します。`.env` の自動読み込みやOAuthログイン画面の起動は行いません。
 
 ```json
 {
@@ -340,3 +367,5 @@ npm test
 ```
 
 外部サービスや認証情報を使わず、実際のstdio子プロセス・ローカルHTTPサーバー・MCPクライアントを用いて検証します。遅延起動、定義の選択取得、固定5ツール、ON/OFF、許可リスト、ページング、同時要求、アイドル停止、異常終了、キャンセル、タイムアウト、終了時の子プロセス回収に加え、Skillの紐づけ・参照ファイル・更新検出・本文の遅延取得を含みます。
+
+同期テストは独立した2端末分の状態と共有フォルダーを作り、受信承認・端末別の起動設定／ON/OFF・Skill転送・同時編集・配信順序の逆転・オフライン・改ざん・CLI・実際のMCP経由での再起動不要の取り込みを検証します。GitHub ActionsではWindows・macOS・Linux、Node.js 22／24で同じテストを実行します。実際のLANやクラウドの転送機構はテスト環境に含みません。

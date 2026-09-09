@@ -51,7 +51,7 @@ export class SkillStore {
     }
   }
 
-  private parse(id: string, text: string) {
+  static parse(id: string, text: string) {
     const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
     if (!match || match[1]!.length > MAX_FRONTMATTER_CHARS) throw new HubError(`Skill ${id} needs YAML frontmatter (name and description, at most 16 KiB).`);
     try {
@@ -71,7 +71,7 @@ export class SkillStore {
   async summary(id: string): Promise<SkillSummary> {
     try {
       const { text } = await this.file(id, 'SKILL.md');
-      const { description } = this.parse(id, text);
+      const { description } = SkillStore.parse(id, text);
       return { skill: id, description, available: true };
     } catch {
       // A broken optional skill must not hide an otherwise usable MCP server.
@@ -82,7 +82,7 @@ export class SkillStore {
   async read(id: string, options: { file?: string; offset?: number; ifRevision?: string } = {}) {
     const file = options.file ?? 'SKILL.md';
     const { root, text } = await this.file(id, file);
-    const content = file === 'SKILL.md' ? this.parse(id, text).body : text;
+    const content = file === 'SKILL.md' ? SkillStore.parse(id, text).body : text;
     const revision = createHash('sha256').update(content).digest('hex').slice(0, 16);
     const pointer = { skill: id, file, revision };
     if (options.ifRevision === revision) return { ...pointer, unchanged: true };
@@ -99,7 +99,7 @@ export class SkillStore {
   async validate(): Promise<void> {
     for (const id of Object.keys(this.paths)) {
       const { root, text } = await this.file(id, 'SKILL.md');
-      const { name } = this.parse(id, text);
+      const { name } = SkillStore.parse(id, text);
       if (name !== basename(root)) throw new HubError(`Skill ${id}: frontmatter name must match its directory name.`);
     }
   }

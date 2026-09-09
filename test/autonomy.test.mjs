@@ -39,7 +39,7 @@ test('agents add/remove persistent template and public HTTPS registrations witho
   await another.refresh();
   await assert.rejects(another.call('local', 'echo', {}), /Unknown server/);
   assert.equal(Object.hasOwn((await registry.read()).servers, 'local'), false);
-  assert.equal((await stat(registry.path)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(registry.path)).mode & 0o777, 0o600);
 });
 
 test('registration rejects raw commands, credential inheritance, allowlist widening and policy injection', async t => {

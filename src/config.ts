@@ -18,6 +18,18 @@ const common = {
   toolSkills: z.record(z.string(), z.array(id)).default({}),
 };
 const absolutePath = z.string().refine(isAbsolute, 'Must be an absolute path');
+export const securitySchema = z.object({
+  allowStdio: z.boolean().default(true),
+  allowHttp: z.boolean().default(true),
+  allowAgentRegistration: z.boolean().default(true),
+  allowAgentPublish: z.boolean().default(false),
+  requireSyncApproval: z.boolean().default(true),
+  requireHttps: z.boolean().default(true),
+  blockPrivateHttp: z.boolean().default(true),
+  enforceToolAllowlist: z.boolean().default(true),
+  inheritProcessEnv: z.boolean().default(false),
+}).strict();
+export const securityDefaults = securitySchema.parse({});
 const stdio = z.object({
   ...common,
   transport: z.literal('stdio'),
@@ -48,6 +60,12 @@ export const configSchema = z.object({
   timeoutMs: z.number().int().min(100).max(600_000).default(60_000),
   skills: z.record(id, absolutePath).default({}),
   context: contextSchema.default({ maxChars: 6000, listLimit: 5, summaryChars: 160 }),
+  security: securitySchema.default(securityDefaults),
+  sync: z.object({
+    folder: absolutePath.optional(),
+    pollIntervalMs: z.number().int().min(1000).max(3_600_000).default(10000),
+    bindings: z.record(id, id).default({}),
+  }).strict().default({ pollIntervalMs: 10000, bindings: {} }),
   agent: z.object({
     allowPublicHttp: z.boolean().default(true),
     allowedHttpOrigins: z.array(z.url()).default([]),

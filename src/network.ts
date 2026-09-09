@@ -3,7 +3,7 @@ import { isIP } from 'node:net';
 import { Agent, buildConnector } from 'undici';
 import ipaddr from 'ipaddr.js';
 import { HubError } from './errors.js';
-import type { Config } from './config.js';
+import { securityDefaults, type Config } from './config.js';
 
 export function isPublicAddress(address: string): boolean {
   try {
@@ -14,16 +14,16 @@ export function isPublicAddress(address: string): boolean {
   } catch { return false; }
 }
 
-export function validateAgentUrl(value: string, policy: Config['agent']): URL {
+export function validateAgentUrl(value: string, policy: Config['agent'], security = securityDefaults): URL {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) {
     throw new HubError('Use an HTTP(S) MCP URL without credentials, query or fragment. Credentials belong in owner-defined templates.');
   }
   const allowed = policy.allowedHttpOrigins.some(origin => new URL(origin).origin === url.origin);
   if (!allowed) {
-    if (!policy.allowPublicHttp || url.protocol !== 'https:') throw new HubError('This origin is not allowed. Public endpoints require HTTPS; private endpoints require owner policy.');
+    if (!policy.allowPublicHttp || (security.requireHttps && url.protocol !== 'https:')) throw new HubError('This origin is not allowed. Public endpoints require HTTPS; private endpoints require owner policy.');
     const host = url.hostname.replace(/^\[|\]$/g, '');
-    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || (isIP(host) && !isPublicAddress(host))) {
+    if (security.blockPrivateHttp && (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || (isIP(host) && !isPublicAddress(host)))) {
       throw new HubError('Private, loopback and special network addresses are blocked for agent-added URLs.');
     }
   }

@@ -10,6 +10,8 @@ import { SkillStore } from './skills.js';
 import { Registry, registrationSchema, type Registration } from './registry.js';
 import { guardedFetch, validateAgentUrl } from './network.js';
 import { ResultStore } from './context.js';
+import { DeviceState } from './device.js';
+import { SyncManager } from './sync.js';
 
 export { HubError } from './errors.js';
 type Entry = {
@@ -20,7 +22,8 @@ type Entry = {
   timer?: NodeJS.Timeout;
   tail: Promise<unknown>;
   state: 'stopped' | 'starting' | 'running' | 'stopping';
-  source: 'configured' | 'agent';
+  source: 'configured' | 'agent' | 'sync';
+  template?: string;
   signature?: string;
   privateHttp: boolean;
   revoked: AbortController;
@@ -33,13 +36,20 @@ export class Hub {
   private readonly shutdown = new AbortController();
   private closePromise?: Promise<void>;
   private readonly skills: SkillStore;
+  private readonly skillPaths: Record<string, string>;
+  private syncedSkills = new Set<string>();
+  private readonly device?: DeviceState;
+  private readonly sync?: SyncManager;
   readonly results = new ResultStore();
   readonly context: Config['context'];
   private mutations: Promise<unknown> = Promise.resolve();
   private focusIds?: Set<string>;
 
-  constructor(private readonly config: Config, private readonly registry = new Registry()) {
-    this.skills = new SkillStore(config.skills);
+  constructor(private readonly config: Config, private readonly registry = new Registry(), options: { device?: DeviceState; sync?: SyncManager } = {}) {
+    this.device = options.device;
+    this.sync = options.sync;
+    this.skillPaths = { ...config.skills };
+    this.skills = new SkillStore(this.skillPaths);
     this.context = { ...config.context };
     for (const [id, server] of Object.entries(config.servers)) {
       this.entries.set(id, this.newEntry(server, 'configured', true));
@@ -63,10 +73,10 @@ export class Hub {
       if (!Object.hasOwn(this.config.templates, registration.template)) throw new HubError('Unknown owner-defined template. Use control help for add.');
       base = this.config.templates[registration.template]!;
       if (registration.enabled && !base.enabled && !base.allowAgentEnable) throw new HubError('Template policy forbids enabling this server.');
-      if (base.allowedTools && registration.allowedTools?.some(tool => !base.allowedTools!.includes(tool))) throw new HubError('Cannot widen a template tool allowlist.');
+      if (this.config.security.enforceToolAllowlist && base.allowedTools && registration.allowedTools?.some(tool => !base.allowedTools!.includes(tool))) throw new HubError('Cannot widen a template tool allowlist.');
     } else {
-      const url = validateAgentUrl(registration.url, this.config.agent);
-      privateHttp = this.config.agent.allowedHttpOrigins.some(origin => new URL(origin).origin === url.origin);
+      const url = validateAgentUrl(registration.url, this.config.agent, this.config.security);
+      privateHttp = !this.config.security.blockPrivateHttp || this.config.agent.allowedHttpOrigins.some(origin => new URL(origin).origin === url.origin);
       base = serverSchema.parse({ transport: 'http', url: url.href });
     }
     const { enabled, description, tags, allowedTools, skills } = registration;
@@ -85,14 +95,15 @@ export class Hub {
 
   private async syncRegistry() {
     const document = await this.registry.read();
+    const managed = new Set(this.sync?.managedIds() ?? []);
     // Revalidate persisted, agent-written definitions against current owner policy before using them.
-    const resolved = new Map(Object.entries(document.servers).map(([id, registration]) => {
+    const resolved = new Map(Object.entries(document.servers).filter(([id]) => !managed.has(id)).map(([id, registration]) => {
       if (Object.hasOwn(this.config.servers, id)) throw new HubError('Agent registry conflicts with an owner-defined server.');
-      return [id, { ...this.resolveRegistration(registration), signature: JSON.stringify(registration) }];
+      return [id, { ...this.resolveRegistration(registration), signature: JSON.stringify(registration), template: 'template' in registration ? registration.template : undefined }];
     }));
     if (resolved.size > this.config.agent.maxServers) throw new HubError('Agent registry exceeds owner server limit.');
     for (const [id, entry] of this.entries) {
-      if (entry.source !== 'agent' || resolved.get(id)?.signature === entry.signature) continue;
+      if (entry.source !== 'agent' || managed.has(id) || resolved.get(id)?.signature === entry.signature) continue;
       this.revoke(id, entry);
       await this.queue(entry, () => this.disconnect(entry));
       this.entries.delete(id);
@@ -100,32 +111,104 @@ export class Hub {
     for (const [id, value] of resolved) {
       if (this.entries.has(id)) continue;
       const entry = this.newEntry(value.config, 'agent', value.privateHttp, value.signature);
+      entry.template = value.template;
       if (this.focusIds && !this.focusIds.has(id)) entry.enabled = false;
       this.entries.set(id, entry);
     }
   }
 
-  refresh() { return this.mutate(() => this.syncRegistry()); }
+  private async syncShared() {
+    if (!this.sync) return;
+    const ready = new Map((await this.sync.available()).map(server => [server.id, server]));
+    for (const id of this.syncedSkills) delete this.skillPaths[id];
+    this.syncedSkills.clear();
+    for (const id of this.sync.managedIds()) {
+      const previous = this.entries.get(id);
+      const value = ready.get(id);
+      const enabled = previous?.enabled;
+      if (previous && (previous.source !== 'sync' || previous.signature !== value?.revision)) {
+        this.revoke(id, previous);
+        await this.queue(previous, () => this.disconnect(previous));
+        this.entries.delete(id);
+      }
+      if (!value) continue;
+      if (!this.entries.has(id)) {
+        const entry = this.newEntry(value.config, 'sync', value.privateHttp, value.revision);
+        entry.template = value.template;
+        entry.enabled = enabled ?? false;
+        if (this.focusIds && !this.focusIds.has(id)) entry.enabled = false;
+        this.entries.set(id, entry);
+      }
+      for (const [skill, path] of Object.entries(value.paths)) {
+        if (Object.hasOwn(this.config.skills, skill)) throw new HubError('Synced skill ID conflicts with local configuration.');
+        this.skillPaths[skill] = path; this.syncedSkills.add(skill);
+      }
+    }
+  }
+
+  refresh() { return this.mutate(async () => {
+    await this.sync?.pull();
+    await this.syncRegistry();
+    await this.syncShared();
+    if (this.device) {
+      const state = await this.device.read();
+      for (const [id, entry] of this.entries) {
+        const enabled = state.enabled[id];
+        if (enabled === undefined || enabled === entry.enabled) continue;
+        if (enabled && !entry.config.allowAgentEnable) continue;
+        if (!enabled) { this.revoke(id, entry); await this.queue(entry, () => this.disconnect(entry)); }
+        else { entry.enabled = true; entry.revoked = new AbortController(); }
+      }
+    }
+  }); }
+
+  securityPolicy() { return { ...this.config.security, mutableThroughMcp: false }; }
+
+  async syncControl(operation: 'status' | 'pull' | 'publish' | 'remove', server?: string, offset = 0, limit = this.context.listLimit, owner = false) {
+    if (!this.sync) throw new HubError('Sync is unavailable in this Hub. Use the installed CLI.');
+    if (operation === 'status') return this.sync.status(offset, limit);
+    if (operation === 'pull') { await this.sync.pull(true); await this.refresh(); return this.sync.status(offset, limit); }
+    if (!owner && !this.config.security.allowAgentPublish) throw new HubError('Owner policy disables agent publishing to the shared folder. Local CLI sync publish/remove is available.');
+    if (!server) throw new HubError('Sync publish/remove requires server.');
+    if (operation === 'remove') {
+      const entry = this.entries.get(server);
+      if (entry && !entry.config.allowAgentRemove) throw new HubError('Owner policy prevents removing this server.');
+      const revision = await this.sync.remove(server);
+      await this.refresh();
+      return { server, revision, shared: true, deleted: true };
+    }
+    const entry = this.entry(server);
+    // Preserve the origin device's switch while promoting its registration to sync management.
+    await this.device?.set(server, entry.enabled);
+    // Owner-defined sources remain editable originals; synced cache copies are immutable snapshots.
+    const original = this.config.servers[server];
+    const revision = await this.sync.publish(server, original ?? entry.config, original ? this.config.skills : this.skillPaths, entry.template);
+    await this.refresh();
+    return { server, revision, shared: true };
+  }
 
   registrationPolicy() {
-    return { publicHttps: this.config.agent.allowPublicHttp, maxServers: this.config.agent.maxServers,
+    return { allowed: this.config.security.allowAgentRegistration, publicHttps: this.config.agent.allowPublicHttp, maxServers: this.config.agent.maxServers,
       templates: Object.entries(this.config.templates).map(([template, value]) => ({ template, description: value.description, transport: value.transport })) };
   }
 
   add(id: string, input: unknown) {
     return this.mutate(async () => {
+      if (!this.config.security.allowAgentRegistration) throw new HubError('Owner policy disables agent registration.');
       idSchema.parse(id);
       const parsed = registrationSchema.safeParse(input);
       if (!parsed.success) throw new HubError('Invalid registration. Use hub_control help with action add for its schema. Raw commands, credentials and policy edits are not accepted.');
       const registration = parsed.data;
       this.resolveRegistration(registration);
       if (Object.hasOwn(this.config.servers, id)) throw new HubError('Cannot replace an owner-defined server.');
+      if (this.sync?.managedIds().includes(id)) throw new HubError('Server is managed by sync. Use sync operations for shared definitions.');
       await this.registry.mutate(document => {
         if (Object.hasOwn(document.servers, id)) throw new HubError('Server ID already exists. Remove it before adding a replacement.');
         if (Object.keys(document.servers).length >= this.config.agent.maxServers) throw new HubError('Agent server limit reached.');
         document.servers[id] = registration;
       });
       await this.syncRegistry();
+      await this.device?.set(id, this.entry(id).enabled);
       return { ...this.summary(id, this.entry(id)), scope: this.registry.path ? 'shared' : 'session' };
     });
   }
@@ -134,6 +217,7 @@ export class Hub {
     return this.mutate(async () => {
       await this.syncRegistry();
       const entry = this.entry(id);
+      if (entry.source === 'sync') throw new HubError('Use hub_control sync with operation remove to publish a shared deletion, or disable for this device only.');
       if (!entry.config.allowAgentRemove) throw new HubError('Owner policy prevents removing this server.');
       if (entry.source === 'agent') await this.registry.mutate(document => { delete document.servers[id]; });
       this.revoke(id, entry);
@@ -175,7 +259,7 @@ export class Hub {
   }
 
   private skillIds(entry: Entry, tool?: string): string[] {
-    const allow = entry.config.allowedTools;
+    const allow = this.config.security.enforceToolAllowlist ? entry.config.allowedTools : undefined;
     const specific = Object.entries(entry.config.toolSkills)
       .filter(([name]) => (!tool || tool === name) && (!allow || allow.includes(name)))
       .flatMap(([, skills]) => skills);
@@ -252,6 +336,7 @@ export class Hub {
 
   private transport(config: ServerConfig, entry: Entry): Transport {
     if (config.transport === 'http') {
+      if (!this.config.security.allowHttp) throw new HubError('HTTP transport is disabled by local security policy.');
       const network = guardedFetch(config.url, entry.privateHttp);
       entry.cleanup = network.close;
       return new StreamableHTTPClientTransport(new URL(config.url), {
@@ -259,7 +344,9 @@ export class Hub {
         fetch: network.fetch,
       });
     }
+    if (!this.config.security.allowStdio) throw new HubError('Stdio transport is disabled by local security policy.');
     const env: Record<string, string> = {};
+    if (this.config.security.inheritProcessEnv) for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
     for (const key of config.inheritEnv) {
       if (process.env[key] !== undefined) env[key] = process.env[key]!;
     }
@@ -274,7 +361,7 @@ export class Hub {
   private async connect(entry: Entry, signal: AbortSignal): Promise<Client> {
     if (entry.client) return entry.client;
     entry.state = 'starting';
-    const client = new Client({ name: 'mcp-context-hub', version: '0.2.0' }, { capabilities: {} });
+    const client = new Client({ name: 'mcp-context-hub', version: '0.3.0' }, { capabilities: {} });
     let transport: Transport | undefined;
     try {
       transport = this.transport(entry.config, entry);
@@ -333,7 +420,7 @@ export class Hub {
 
   async tools(id: string, options: { tool?: string; query?: string; offset?: number; limit?: number; ifRevision?: string } = {}, signal?: AbortSignal) {
     return this.withClient(id, signal, async (client, requestSignal) => {
-      const allow = this.entry(id).config.allowedTools;
+      const allow = this.config.security.enforceToolAllowlist ? this.entry(id).config.allowedTools : undefined;
       let tools = (await this.allTools(client, requestSignal)).filter(tool => !allow || allow.includes(tool.name));
       if (options.tool) {
         const tool = tools.find(tool => tool.name === options.tool);
@@ -354,7 +441,7 @@ export class Hub {
 
   async call(id: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal) {
     // Check local allowlist before starting a process or making a network connection.
-    const allow = this.entry(id).config.allowedTools;
+    const allow = this.config.security.enforceToolAllowlist ? this.entry(id).config.allowedTools : undefined;
     if (allow && !allow.includes(tool)) throw new HubError('Tool is not allowed by the server configuration.');
     return this.withClient(id, signal, async (client, requestSignal) => {
       return CallToolResultSchema.parse(await client.callTool({ name: tool, arguments: args }, CallToolResultSchema, { signal: requestSignal }));
@@ -376,6 +463,7 @@ export class Hub {
         if (action === 'disable') entry.enabled = false;
         await this.disconnect(entry);
       }
+      if (action === 'enable' || action === 'disable') await this.device?.set(id, entry.enabled);
       return this.summary(id, entry);
     });
   }

@@ -113,7 +113,7 @@ test('skill files are confined to the registered directory and bounded UTF-8 tex
   const { hub, skills, dir } = await setup(t);
   await writeFile(join(dir, 'outside.txt'), 'OUTSIDE_SECRET');
   await symlink(join(dir, 'outside.txt'), join(skills.workflow, 'references/outside.md'));
-  await symlink(dir, join(skills.workflow, 'references/outside-dir'));
+  await symlink(dir, join(skills.workflow, 'references/outside-dir'), 'dir');
   for (const file of ['../outside.txt', join(dir, 'outside.txt'), 'references/outside.md', 'references/outside-dir/outside.txt', '..\\outside.txt']) {
     await assert.rejects(hub.skill('blender', 'workflow', { file }), /relative path|outside/);
   }
