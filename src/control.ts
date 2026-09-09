@@ -32,8 +32,8 @@ const purposes: Record<Action, string> = {
   context: 'Inspect/change output budgets for this session. Character counts, not exact tokens. Cannot erase conversation history.',
   result: 'Read cached output pages or a JSON Pointer without repeating the operation. native=true explicitly returns the full original result, bypassing the character budget.',
   forget: 'Drop cached results for server, or all results if server is omitted. Does not erase conversation history.',
-  sync: 'Read/pull shared-folder revisions without startup. publish/remove requires server and owner permission to share. Conflicts and approval are resolved through the local CLI. No credentials, paths or ON/OFF state are shared.',
-  security: 'Read local security switches. Changes are owner-only via mcp-context-hub security set KEY on|off, effective after restarting the Hub.',
+  sync: 'Read/pull shared-folder revisions without startup. publish/remove requires server and owner permission to share. Owners resolve conflicts and approvals through GUI/CLI. No credentials, paths or ON/OFF state are shared.',
+  security: 'Read local security switches. Owner changes via GUI/CLI apply on the next request.',
 };
 
 export async function control(hub: Hub, action: Action, server: string | undefined, input: unknown, signal?: AbortSignal): Promise<CallToolResult> {

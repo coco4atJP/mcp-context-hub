@@ -246,7 +246,7 @@ export class Hub {
     return entry;
   }
 
-  isEnabled(id: string): boolean { return this.entries.get(id)?.enabled ?? false; }
+  isEnabled(id: string): boolean { return !this.closing && (this.entries.get(id)?.enabled ?? false); }
 
   private summary(id: string, entry: Entry) {
     return {
@@ -361,7 +361,7 @@ export class Hub {
   private async connect(entry: Entry, signal: AbortSignal): Promise<Client> {
     if (entry.client) return entry.client;
     entry.state = 'starting';
-    const client = new Client({ name: 'mcp-context-hub', version: '0.3.0' }, { capabilities: {} });
+    const client = new Client({ name: 'mcp-context-hub', version: '0.4.0' }, { capabilities: {} });
     let transport: Transport | undefined;
     try {
       transport = this.transport(entry.config, entry);

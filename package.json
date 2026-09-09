@@ -1,6 +1,6 @@
 {
   "name": "@nekon/mcp-context-hub",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "A lazy MCP gateway with a small, fixed context footprint",
   "type": "module",
@@ -15,12 +15,12 @@
     "skills"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && vite build",
     "test": "npm run build && node --test test/*.test.mjs",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc -p ui/tsconfig.json",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -32,7 +32,12 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.3"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
   },
   "repository": {
     "type": "git",

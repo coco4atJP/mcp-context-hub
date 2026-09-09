@@ -1,6 +1,6 @@
 # MCP Context Hub
 
-必要なMCPサーバーを、必要なときだけ使うためのローカルHubです。Node.js 22以上で動作します。
+必要なMCPサーバーを、必要なときだけ使うためのローカルHubです。Node.js 22.12以上で動作します。
 
 Windows・macOS間で、選択したMCP登録とSkillを**共有フォルダー経由で同期**できます。専用サーバーは不要です。ON/OFF・認証・起動パス・安全性設定は端末ごとに管理します。[同期の設定手順](docs/sync.md) / [安全性の9項目のスイッチ](docs/security.md)
 
@@ -27,7 +27,7 @@ cd mcp-context-hub
 npm ci
 npm test
 npm pack
-npm install --global ./nekon-mcp-context-hub-0.3.0.tgz
+npm install --global ./nekon-mcp-context-hub-0.4.0.tgz
 mcp-context-hub init
 mcp-context-hub install-skill
 mcp-context-hub config-path
@@ -37,7 +37,7 @@ tarballをインストールするため、元のリポジトリを移動して�
 
 `install-skill` はHubの使い方を案内する [mcp-context-hub Skill](skills/mcp-context-hub/SKILL.md) を `$CODEX_HOME/skills`（未設定なら `~/.codex/skills`）に配置します。既存の `SKILL.md` は上書きしません。別クライアント用には `--skills-dir /absolute/path/to/skills` で配置先を指定できます。クライアントがSkillを再検出した後に利用できます。
 
-設定ファイルの選択順は `--config` → `MCP_HUB_CONFIG` → `$XDG_CONFIG_HOME/mcp-context-hub/config.json` → `~/.config/mcp-context-hub/config.json` です。Hub起動時に読み込みます。編集後はクライアントからHubを再起動してください。
+設定ファイルの選択順は `--config` → `MCP_HUB_CONFIG` → `$XDG_CONFIG_HOME/mcp-context-hub/config.json` → `~/.config/mcp-context-hub/config.json` です。v0.4から、編集を次のMCP要求で読み直します。変更時は古い接続を閉じ、出力量・focus条件・結果キャッシュをリセットします。ON/OFFは端末の保存値を保持します。
 
 まずオフラインのデモを登録できます。`command` と `args` を実際の絶対パスに置き換えます。Nodeのパスは `command -v node`、インストール先は `npm root -g` で確認できます。
 
@@ -63,6 +63,16 @@ mcp-context-hub check
 ```
 
 `check` は設定の構造と、登録したSkillの `SKILL.md`・メタデータを検証し、接続先を起動しません。コマンドの存在、認証情報、接続可能性は実際に使う時に検証されます。[設定例](examples/config.json) にはHTTP接続も含めています。
+
+## 小窓で管理する
+
+```sh
+mcp-context-hub gui
+```
+
+ローカルのブラウザ管理画面を開きます。右上の「小窓で開く」で、幅540pxの小窓として使えます。サーバーのON/OFF・追加・削除・Skill添付、共有フォルダーの接続と版の承認、安全性の9項目を操作できます。CLIと同じ設定ファイルを使い、操作のためにMCPを起動しません。
+
+GUIは `127.0.0.1` だけで待ち受け、起動ごとの認証を必須にします。既定ではバックグラウンドで動き、画面の「終了」または5分間通信がない場合に停止します。`gui --no-open` はブラウザを開かず前景で起動します。[GUIの使い方と動作](docs/gui.md)
 
 ## クライアントへの登録
 
@@ -186,7 +196,7 @@ Agent追加分は、設定ファイル名に `.agents.json` を付けたファ�
 
 同じ設定を使うHubは、次のツール要求で登録を同期します。追加されたMCPは再起動なしで見つけられます。削除された接続先はその時点で切断します。保存されたAgent登録も、読み込み時に所有者の現在のポリシーで検証します。無効な登録やポリシー違反がある場合は処理を拒否し、所有者による修正を必要とします。
 
-**v0.3から、CLIで起動したHubのON/OFFは `.device.json` に端末別で保存**します。同じ端末・configの別Hubにも次の要求で反映します。`focus` が行ったON/OFFも保存します。新規追加分に対するfocusの選択条件・出力量・結果キャッシュはセッションごとです。別Hubの実行中の要求を即時に取り消す保証はありません。所有者の `servers` をremoveした場合は、そのセッションから除外するだけなので、次のHub起動時には復元されます。Agent登録用ファイルへ手動編集する際はHubを停止してください。書き込み中の異常終了で `.lock` が残った場合は、書き込みプロセスが残っていないことを確認してから所有者が取り除きます。
+**v0.3から、CLIで起動したHubのON/OFFは `.device.json` に端末別で保存**します。同じ端末・configの別Hubにも次の要求で反映します。`focus` が行ったON/OFFも保存します。新規追加分に対するfocusの選択条件・出力量・結果キャッシュはセッションごとです。別Hubの実行中の要求を即時に取り消す保証はありません。所有者の `servers` をremoveした場合は、そのセッションから除外するだけなので、次のHub起動時や所有者設定の再読み込み時には復元されます。Agent登録用ファイルへ手動編集する際はHubを停止してください。書き込み中の異常終了で `.lock` が残った場合は、書き込みプロセスが残っていないことを確認してから所有者が取り除きます。
 
 ### Windows / macOS間の同期
 
@@ -197,7 +207,7 @@ mcp-context-hub sync connect --folder "/ABSOLUTE/PATH/TO/SHARED_FOLDER"
 mcp-context-hub sync publish --server blender
 ```
 
-受信側では `sync status`・`sync inspect --server blender` で内容を確認し、`sync approve --server blender --revision SHA256` で版を承認します。stdio MCPの実行環境は端末の同名テンプレートへ結び付けます。新規受信は初期OFFです。承認済みの変更はHubを再起動せずに反映します。接続先フォルダーやテンプレートの設定変更には再起動が必要です。
+受信側では `sync status`・`sync inspect --server blender` で内容を確認し、`sync approve --server blender --revision SHA256` で版を承認します。stdio MCPの実行環境は端末の同名テンプレートへ結び付けます。新規受信は初期OFFです。承認済みの変更はHubを再起動せずに反映します。接続先フォルダーやテンプレートの変更も、次のMCP要求で反映します。
 
 同時編集は競合として検出し、明示的に採用する版を選びます。同期管理のサーバーは `sync remove` で共有削除し、この端末だけ止める場合は `disable` を使います。詳細とWindowsの設定例は [同期の手順](docs/sync.md) を参照してください。
 
@@ -209,7 +219,7 @@ mcp-context-hub security set allowAgentPublish on
 mcp-context-hub security set requireSyncApproval off
 ```
 
-共有先へのAgentによる公開と、受信版の承認要求は別々のスイッチです。HTTP／stdio、HTTPS必須、プライベートIP制限、ツール許可リスト、環境変数継承も個別に設定できます。各端末の所有者が設定し、Hub再起動後に反映します。初期値と意味は [安全性設定](docs/security.md) を参照してください。
+共有先へのAgentによる公開と、受信版の承認要求は別々のスイッチです。HTTP／stdio、HTTPS必須、プライベートIP制限、ツール許可リスト、環境変数継承も個別に設定できます。各端末の所有者が設定し、次のMCP要求で反映します。初期値と意味は [安全性設定](docs/security.md) を参照してください。
 
 ### 長い結果を必要な部分だけ読む
 
@@ -299,7 +309,7 @@ Hubが管理するSkillをクライアントの自動検出対象外のディレ
 
 `scripts/` 内のスクリプトもテキストとして返すだけで、Hubでは実行しません。実行が必要な場合は、エージェントが返された `basePath` とクライアント側の実行手段を使います。Skillの `allowed-tools` などをクライアントの権限設定へ自動反映しません。
 
-Skill本文の編集は次回の読み取りに反映されます。登録パスや紐づけの変更はHubの再起動で反映します。壊れたSkillは一覧で `available: false` と表示し、ほかのMCPの利用を妨げません。詳細は `mcp-context-hub check` で確認できます。
+Skill本文の編集は次回の読み取りに反映されます。登録パスや紐づけの変更も、次のMCP要求で反映します。壊れたSkillは一覧で `available: false` と表示し、ほかのMCPの利用を妨げません。詳細は `mcp-context-hub check` で確認できます。
 
 ## ON/OFFとプロセスの扱い
 
@@ -367,5 +377,7 @@ npm test
 ```
 
 外部サービスや認証情報を使わず、実際のstdio子プロセス・ローカルHTTPサーバー・MCPクライアントを用いて検証します。遅延起動、定義の選択取得、固定5ツール、ON/OFF、許可リスト、ページング、同時要求、アイドル停止、異常終了、キャンセル、タイムアウト、終了時の子プロセス回収に加え、Skillの紐づけ・参照ファイル・更新検出・本文の遅延取得を含みます。
+
+GUIテストはループバック認証・Host/Origin検証・設定の競合検知・Skill添付・同期承認・稼働中MCPへの設定反映・終了を検証します。画面は実データをAPIから読み込むReact UIで、ビルド済みファイルを配布します。
 
 同期テストは独立した2端末分の状態と共有フォルダーを作り、受信承認・端末別の起動設定／ON/OFF・Skill転送・同時編集・配信順序の逆転・オフライン・改ざん・CLI・実際のMCP経由での再起動不要の取り込みを検証します。GitHub ActionsではWindows・macOS・Linux、Node.js 22／24で同じテストを実行します。実際のLANやクラウドの転送機構はテスト環境に含みません。

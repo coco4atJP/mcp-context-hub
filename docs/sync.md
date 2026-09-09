@@ -34,7 +34,7 @@ Windowsでは、同じ共有先のWindows側のパスを指定します。ドラ
 mcp-context-hub sync connect --folder "Z:\McpHub"
 ```
 
-クラウド同期フォルダーでもコマンドは同じです。Hubが扱うファイルを両端末でローカルに利用可能な状態にしてください。接続先パスは共有しません。設定後にMCPクライアントからHubを再起動します。
+クラウド同期フォルダーでもコマンドは同じです。Hubが扱うファイルを両端末でローカルに利用可能な状態にしてください。接続先パスは共有しません。設定は次のMCP要求で反映します。
 
 `connect` は `config.json` に `sync.folder` を設定し、共有先に `mcp-context-hub-v1/changes` を作ります。マウントされていない場所を誤って作らないよう、指定先フォルダー自体は存在する必要があります。**所有者のconfigと端末状態は共有フォルダーの外に置いてください。** config全体や `.agents.json` をクラウド同期する方式ではありません。
 
@@ -48,7 +48,7 @@ mcp-context-hub sync publish --server blender
 
 `servers.blender` があれば、その設定とローカルSkill原本を読みます。Agent追加分も公開できます。その場合はAgentが選んだテンプレートIDを引き継ぎます。通常の追加操作だけでは共有先へ送信しません。
 
-登録と公開はMCPを起動しません。送信元のON/OFFは維持されます。共有管理へ移ったサーバーのカタログでは `source: "sync"` と表示します。ローカルの原本を編集した後は再び `publish` してください。`config.json` の変更をCLIは毎回読み込み、起動済みHubは再起動時に読み込みます。
+登録と公開はMCPを起動しません。送信元のON/OFFは維持されます。共有管理へ移ったサーバーのカタログでは `source: "sync"` と表示します。ローカルの原本を編集した後は再び `publish` してください。`config.json` の変更をCLIは毎回読み込み、起動済みHubは次のMCP要求で読み直します。
 
 ## 3. 受信端末の起動設定を結び付ける
 
@@ -70,7 +70,7 @@ mcp-context-hub sync publish --server blender
 }
 ```
 
-上のツール名・コマンドは例です。インストールしたMCPの実際の定義を使ってください。設定変更後にHubを再起動します。テンプレートがなければ `needs-local-setup` となり、実行を保留します。共有元のSkill原本のパスを用意する必要はありません。
+上のツール名・コマンドは例です。インストールしたMCPの実際の定義を使ってください。設定変更は次のMCP要求で反映します。テンプレートがなければ `needs-local-setup` となり、実行を保留します。共有元のSkill原本のパスを用意する必要はありません。
 
 別名のテンプレートを使う場合や、HTTP MCPへ端末固有の認証を付ける場合は `sync.bindings` を使います。
 
@@ -105,7 +105,7 @@ mcp-context-hub sync approve --server blender --revision 表示された64桁の
 mcp-context-hub security set requireSyncApproval off
 ```
 
-再起動後、競合しない完全な版を自動で取り込みます。フォルダーへの書き込み権限を持つ相手がSkill内容と接続情報を変更できる設定です。端末のテンプレート・認証・安全性設定は共有内容で変更できません。新規受信の初期OFFは維持します。
+次のMCP要求から、競合しない完全な版を自動で取り込みます。フォルダーへの書き込み権限を持つ相手がSkill内容と接続情報を変更できる設定です。端末のテンプレート・認証・安全性設定は共有内容で変更できません。新規受信の初期OFFは維持します。
 
 ## エージェントから利用
 
@@ -117,7 +117,7 @@ hub_control({"action":"sync","options":{"operation":"pull"}})
 
 `status` は短い一覧、`pull` は確認間隔を待たずに変更を確認します。`offset`・`limit` でページングします。受信が保留中なら `pending-approval`、`conflict`、`incomplete`、`needs-local-setup` が表示されます。
 
-共有先への公開・削除も任せる場合は、所有者が送信元で `mcp-context-hub security set allowAgentPublish on` を設定してHubを再起動します。
+共有先への公開・削除も任せる場合は、所有者が送信元で `mcp-context-hub security set allowAgentPublish on` を設定します。次のMCP要求で反映します。
 
 ```text
 hub_control({"action":"sync","server":"blender","options":{"operation":"publish"}})
@@ -150,3 +150,7 @@ mcp-context-hub sync resolve --server blender --revision 採用する版
 **Skill本文・説明・URLのパスに書かれた秘密情報を自動判別するものではありません。** 公開する原本には資格情報を含めないでください。同期フォルダーは平文で、アクセス制限や転送の暗号化は共有機構側の設定を使います。SHA256は内容の同一性を確認するもので、端末IDは送信者の認証や署名ではありません。読み取れる他ユーザーには配布内容が見えるため、共有先のメンバーを限定してください。
 
 Hubが保証するのはMCP APIとデータ形式の境界です。同じOSユーザーとしてconfigやCLIを自由に操作できるプログラムを隔離するものではありません。
+
+## GUIを使う
+
+`mcp-context-hub gui` の「同期」から共有フォルダーを選択できます。受信版の「内容を見る」で接続先・許可ツール・Skillファイルを確認し、その版だけを承認します。競合時は採用する版を明示します。送信はサーバー詳細の「共有する」から行います。[GUIの操作手順](gui.md)

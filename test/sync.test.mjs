@@ -220,7 +220,7 @@ test('CLI connects an existing folder, reviews and accepts a pinned revision, an
   const { a, b, folder, dir } = await setup(t);
   const cli = async (...args) => JSON.parse((await run(process.execPath, ['dist/cli.js', ...args], { cwd: resolve('.'), maxBuffer: 4 * 1024 * 1024 })).stdout);
   const blank = join(dir, 'blank.json'); await writeFile(blank, '{"version":1,"servers":{}}');
-  assert.equal((await cli('sync', 'connect', '--folder', folder, '--config', blank)).restartRequired, true);
+  assert.equal((await cli('sync', 'connect', '--folder', folder, '--config', blank)).appliesOnNextRequest, true);
   const first = await cli('sync', 'publish', '--server', 'design', '--config', a.path);
   const inspect = await cli('sync', 'inspect', '--server', 'design', '--config', b.path);
   assert.equal(inspect.revision, first.revision);
