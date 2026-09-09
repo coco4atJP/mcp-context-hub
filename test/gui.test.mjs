@@ -189,10 +189,13 @@ test('GUI closes on idle, and the foreground CLI exits after authenticated shutd
   t.after(() => { child.kill(); });
   const exited = new Promise(resolve => child.once('exit', resolve));
   const url = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill(); reject(new Error('GUI CLI startup timed out')); }, 10000);
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
+    const timer = setTimeout(() => { child.kill(); reject(new Error('GUI CLI startup timed out: ' + stderr)); }, 10000);
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; const match = output.match(/http:\/\/127\.0\.0\.1:\d+\/#token=[a-f0-9]{64}/); if (match) { clearTimeout(timer); resolve(new URL(match[0])); } });
     child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`GUI CLI exited ${code}: ${stderr}`)); });
   });
   const token = new URLSearchParams(url.hash.slice(1)).get('token');
   const response = await fetch(url.origin + '/api/close', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: '{}' });

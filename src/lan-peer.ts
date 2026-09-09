@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { hostname } from 'node:os';
-import { generate } from 'selfsigned';
 import { LanDiscovery } from './lan-discovery.js';
 import { z } from 'zod';
 import { LocalStore } from './storage.js';
@@ -64,6 +63,7 @@ export class LanPeer {
   async start(): Promise<void> {
     this.state = await this.store.read();
     if (!this.state.identity) {
+      const { generate } = await import('selfsigned');
       const generated = await generate([{ name: 'commonName', value: 'MCP Context Hub device' }], {
         keyType: 'ec', curve: 'P-256', algorithm: 'sha256', notBeforeDate: new Date(Date.now() - 60000),
         notAfterDate: new Date(Date.now() + 5 * 365 * 86400000), extensions: [

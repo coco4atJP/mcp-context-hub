@@ -1,4 +1,4 @@
-import { fork } from 'node:child_process';
+import { fork, type ForkOptions, type SpawnOptions } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openGuiBrowser } from './gui.js';
 import { runningGui, sessionUrl } from './daemon.js';
@@ -8,9 +8,11 @@ export async function launchGui(configPath: string, port?: number, options: { op
   let url = existing ? sessionUrl(existing) : undefined;
   if (!url) {
   const args = options.resident ? ['daemon'] : ['gui', '--no-open'];
-  const child = fork(fileURLToPath(new URL('./cli.js', import.meta.url)), [...args, '--config', configPath, ...(port ? ['--port', String(port)] : [])], {
-    detached: true, execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-  });
+  // Node forwards this spawn option through fork; ForkOptions currently omits it from its declaration.
+  const workerOptions: ForkOptions & Pick<SpawnOptions, 'windowsHide'> = {
+    detached: true, windowsHide: true, execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  };
+  const child = fork(fileURLToPath(new URL('./cli.js', import.meta.url)), [...args, '--config', configPath, ...(port ? ['--port', String(port)] : [])], workerOptions);
   url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => { child.kill(); reject(new Error('GUIの起動がタイムアウトしました。')); }, 15000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
