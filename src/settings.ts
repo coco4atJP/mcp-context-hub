@@ -1,5 +1,5 @@
 import { resolve, relative, isAbsolute, sep } from 'node:path';
-import { configSchema, securityDefaults, securitySchema } from './config.js';
+import { configSchema, securityDefaults, securitySchema, fullAccessSecurity } from './config.js';
 import { HubError } from './errors.js';
 import { LocalStore } from './storage.js';
 import { createHash } from 'node:crypto';
@@ -29,4 +29,8 @@ export async function setSecurity(path: string, key: string, value: boolean, exp
   await editSettings(path, data => {
     data.security = securitySchema.parse({ ...(data.security as Record<string, unknown> | undefined), [key]: value });
   }, expectedRevision);
+}
+
+export async function setSecurityPreset(path: string, preset: 'standard' | 'full', expectedRevision?: string) {
+  await editSettings(path, data => { data.security = { ...(preset === 'full' ? fullAccessSecurity : securityDefaults) }; }, expectedRevision);
 }

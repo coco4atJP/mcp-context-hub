@@ -9,15 +9,20 @@ mcp-context-hub security set requireSyncApproval off
 mcp-context-hub security reset
 ```
 
-`on` は指定した機能を有効にし、`off` は無効にします。例えば `blockPrivateHttp off` はブロックを外し、`allowStdio off` はstdio接続自体を止めます。`reset` は全9項目を初期値へ戻します。
+`on` は指定した機能を有効にし、`off` は無効にします。例えば `blockPrivateHttp off` はブロックを外し、`allowStdio off` はstdio接続自体を止めます。`reset` は全14項目を初期値へ戻します。
 
 | スイッチ | 初期値 | 動作 |
 |---|---|---|
 | `allowStdio` | ON | ローカルstdio MCPを起動できる |
 | `allowHttp` | ON | HTTP MCPへ接続できる |
-| `allowAgentRegistration` | ON | AgentがURL・許可済みテンプレートを新規登録できる |
+| `allowAgentRegistration` | ON | Agentが許可された接続を追加・更新できる |
+| `allowAgentStdio` | OFF | Agentがローカルコマンド・引数・作業パスを登録できる |
+| `allowAgentCredentials` | OFF | Agentが環境変数・継承変数・HTTPヘッダーを指定できる |
+| `allowAgentSkills` | OFF | Agentが絶対パスのローカルSkillフォルダーを添付できる |
+| `allowAgentSyncApproval` | OFF | Agentが確認した版を承認・競合解決できる（解決には公開権限も必要） |
+| `allowAgentGlobalFiles` | OFF | Agentが選択済みグローバルファイルを公開・適用できる（公開・承認権限も個別に検査） |
 | `allowAgentPublish` | OFF | Agentが同期先へMCP・Skillを公開／共有削除できる |
-| `requireSyncApproval` | ON | 受信した版ごとに所有者がハッシュを確認して承認する |
+| `requireSyncApproval` | ON | 受信した版ごとに所有者または許可されたAgentがハッシュを確認して承認する |
 | `requireHttps` | ON | Agent追加・共有URLはHTTPS必須。所有者が許可したオリジンは除外 |
 | `blockPrivateHttp` | ON | Agent追加・共有URLの非公開IP・特殊IPをDNS解決時にも拒否。所有者の接続定義・許可オリジンは除外 |
 | `enforceToolAllowlist` | ON | ツール許可リストを一覧・実行・Skill紐づけで強制し、テンプレートの許可範囲拡大を拒否 |
@@ -27,7 +32,9 @@ mcp-context-hub security reset
 
 既存の `agent.allowPublicHttp`・`agent.allowedHttpOrigins`・`agent.maxServers`、サーバー別の `allowAgentEnable`・`allowAgentRemove`・`allowedTools`・タイムアウトも併用できます。登録禁止の設定は新規登録をブロックします。既存サービス全体の通信を止めるにはトランスポートのスイッチを使います。
 
-MCPからは次の読み取りだけを提供します。
+`security preset full` は登録・実行・共有・受信版適用をまとめて許可し、環境変数も継承します。`security preset standard` は初期値に戻します。GUIでも選択できます。プリセット以外の既存設定は維持します。[権限と信頼境界の詳細](global-agents.md#agentに任せる範囲)
+
+MCPから安全性設定については次の読み取りだけを提供します。
 
 ```text
 hub_control({"action":"security"})

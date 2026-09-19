@@ -81,6 +81,7 @@ export async function startGui(options: { configPath: string; port?: number; idl
           const value = z.object({ action: z.enum(['install', 'uninstall']) }).strict().parse(await body(req));
           send(res, 200, await (value.action === 'install' ? installService : uninstallService)(options.configPath));
         }
+        else if (req.method === 'POST' && url.pathname === '/api/agents') send(res, 200, await (await admin.runtime.get()).globals.control(await body(req), true));
         else if (req.method === 'GET' && url.pathname === '/api/config') send(res, 200, await admin.readConfig());
         else if (req.method === 'GET' && url.pathname === '/api/inspect') send(res, 200, await admin.inspect(url.searchParams.get('server') ?? '', url.searchParams.get('revision') ?? undefined));
         else if (req.method === 'GET' && url.pathname === '/api/skills') send(res, 200, await admin.skills(url.searchParams.get('server') ?? ''));

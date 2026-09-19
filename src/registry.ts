@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, rename, rm, lstat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
@@ -10,10 +10,14 @@ const shared = {
   description: z.string().max(500).optional(), tags: z.array(z.string().max(80)).max(30).optional(),
   enabled: z.boolean().default(true), allowedTools: z.array(z.string().max(200)).max(200).optional(),
   skills: z.array(idSchema).max(30).optional(),
+  skillPaths: z.record(idSchema, z.string().max(4000).refine(isAbsolute)).refine(value => Object.keys(value).length <= 30).optional(),
 };
 export const registrationSchema = z.union([
   z.object({ ...shared, template: idSchema }).strict(),
-  z.object({ ...shared, url: z.url().max(2000) }).strict(),
+  z.object({ ...shared, url: z.url().max(2000), headers: z.record(z.string().max(200), z.string().max(8000)).optional() }).strict(),
+  z.object({ ...shared, command: z.string().min(1).max(2000), args: z.array(z.string().max(8000)).max(100).default([]),
+    cwd: z.string().max(4000).refine(isAbsolute).optional(), env: z.record(z.string().max(200), z.string().max(8000)).default({}),
+    inheritEnv: z.array(z.string().max(200)).max(100).default([]) }).strict(),
 ]);
 export type Registration = z.infer<typeof registrationSchema>;
 const documentSchema = z.object({ version: z.literal(1), servers: z.record(idSchema, registrationSchema) }).strict();

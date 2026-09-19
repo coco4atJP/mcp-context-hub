@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HubError } from './errors.js';
 
 /** Bounded reads on a regular descriptor. Paths inside an untrusted tree need directory checks too. */
-export async function readText(path: string, maxBytes: number): Promise<string> {
+export async function readBytes(path: string, maxBytes: number): Promise<Buffer> {
   const info = await lstat(path);
   if (!info.isFile() || info.isSymbolicLink() || info.size > maxBytes) throw new HubError('Expected a bounded regular file.');
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -22,8 +22,12 @@ export async function readText(path: string, maxBytes: number): Promise<string> 
     }
     if (count > maxBytes) throw new HubError('File size limit exceeded.');
     if (count === buffer.length) throw new HubError('File changed while reading; retry after the writer finishes.');
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, count));
+    return buffer.subarray(0, count);
   } finally { await handle.close(); }
+}
+
+export async function readText(path: string, maxBytes: number): Promise<string> {
+  return new TextDecoder('utf-8', { fatal: true }).decode(await readBytes(path, maxBytes));
 }
 
 export async function directory(path: string): Promise<void> {
@@ -54,7 +58,7 @@ export class LocalStore<T> {
     }
   }
 
-  mutate(change: (next: T) => void): Promise<T> {
+  mutate(change: (next: T) => void | Promise<void>): Promise<T> {
     const result = this.tail.then(async () => {
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const until = Date.now() + 5000;
@@ -68,7 +72,7 @@ export class LocalStore<T> {
       }
       try {
         const next = await this.read();
-        change(next);
+        await change(next);
         const valid = this.parse(next);
         const text = JSON.stringify(valid, null, 2) + '\n';
         if (Buffer.byteLength(text) > this.maxBytes) throw new HubError('Local state size limit reached.');

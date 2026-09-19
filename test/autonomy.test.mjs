@@ -108,8 +108,11 @@ test('owner policy is rechecked when loading previously persisted registrations'
   await hub.add('web', { url: 'https://example.com/mcp' });
   const restricted = new Hub(configSchema.parse({ ...config, agent: { allowPublicHttp: false } }), registry);
   t.after(() => restricted.close());
-  await assert.rejects(restricted.refresh(), /not allowed/);
-  await assert.rejects(restricted.call('web', 'echo', {}), /Unknown server/);
+  await restricted.refresh();
+  const web=(await restricted.catalog()).servers.find(s=>s.server==='web');
+  assert.equal(web.enabled,false); assert.match(web.blocked,/not allowed/);
+  await assert.rejects(restricted.call('web', 'echo', {}), /not allowed/);
+  await restricted.remove('web');
 });
 
 test('OFF cancels outstanding requests and invalidates their cached outputs', async t => {

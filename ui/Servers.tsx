@@ -13,7 +13,7 @@ export function Servers({ state, busy, run, add, detail }: { state: GuiState; bu
     <div className="toolbar"><label className="search"><Icon name="search" /><input aria-label="サーバーを検索" placeholder="サーバーを検索" value={query} onChange={event => setQuery(event.target.value)} /></label><button className="outline" onClick={add} disabled={busy}><Icon name="plus" />追加</button></div>
     {!rows.length ? <Empty title={state.servers.length ? '一致するサーバーがありません' : 'まだサーバーがありません'}>{state.servers.length ? '検索する言葉を変えてみてください。' : '「追加」から接続先を登録できます。共有済みの環境は「同期」から取り込めます。'}</Empty> :
       <ul className="server-list">{rows.map(server => <li className="server-row" key={server.server}>
-        <div className="row-copy"><h3>{server.server.replaceAll('_', ' ')}</h3>{server.description && <p>{server.description}</p>}<small>{sourceName(server.source)}{server.skillCount ? ` · ${server.skillCount} ${server.skillCount === 1 ? 'Skill' : 'Skills'}` : ''}</small></div>
+        <div className="row-copy"><h3>{server.server.replaceAll('_', ' ')}</h3>{server.description && <p>{server.description}</p>}<small>{server.blocked ? '現在の権限で停止中 · ' : ''}{sourceName(server.source)}{server.skillCount ? ` · ${server.skillCount} ${server.skillCount === 1 ? 'Skill' : 'Skills'}` : ''}</small></div>
         <Switch label={`${server.server}をON/OFF`} checked={server.enabled} disabled={busy || (!server.enabled && server.agentCanEnable === false)} onChange={enabled => { void run({ action: 'toggle', server: server.server, enabled }, enabled ? 'ONにしました' : 'OFFにしました'); }} />
         <button className="icon-button detail-button" aria-label={`${server.server}の詳細`} onClick={() => detail(server)}><Icon name="chevron" /></button>
       </li>)}</ul>}

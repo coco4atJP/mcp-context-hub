@@ -29,13 +29,14 @@ export class LanController {
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
   private enabled = false;
+  private globalEnabled = false;
   private error?: string;
   private publishErrors: string[] = [];
   constructor(readonly path: string, private readonly options: PeerOptions = {}) {
     this.runtime = new HubRuntime(path);
     this.sources = new LocalStore(path + '.lan-sources.json', value => sourcesSchema.parse(value), () => ({ sources: {} }));
   }
-  get active() { return this.enabled; }
+  get active() { return this.enabled || this.globalEnabled; }
   async start() {
     await this.ensure();
     this.timer = setInterval(() => { void this.tick(); }, 5000); this.timer.unref();
@@ -45,7 +46,7 @@ export class LanController {
     const next = this.tail.then(async () => {
       if (this.closed) return;
       try {
-        const { config } = await this.runtime.get(); this.enabled = config.sync.mode === 'lan';
+        const { config } = await this.runtime.get(); this.enabled = config.sync.mode === 'lan'; this.globalEnabled = config.globalAgents.enabled && (!!config.sync.folder || this.enabled);
         if (!this.enabled) { await this.peer?.close(); this.peer = undefined; return; }
         if (!this.peer) {
           const peer = new LanPeer(this.path, async () => {
@@ -68,7 +69,10 @@ export class LanController {
     return this.updating ??= this.cycle().catch(() => { this.error = '同期データを処理できません。設定と共有内容を確認してください。'; }).finally(() => { this.updating = undefined; });
   }
   private async cycle() {
-    await this.ensure(); if (this.closed || !this.peer) return;
+    await this.ensure(); if (this.closed) return;
+    const { globals } = await this.runtime.get();
+    if (this.globalEnabled) await globals.cycle();
+    if (!this.peer) return;
     const { config, sync, revision: sourceRevision } = await this.runtime.get();
     this.publishErrors = [];
     if (config.sync.autoPublish) {

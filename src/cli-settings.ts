@@ -5,16 +5,17 @@ import { Hub } from './hub.js';
 import { Registry } from './registry.js';
 import { DeviceState } from './device.js';
 import { SyncManager } from './sync.js';
-import { assertLocalConfig, editSettings, setSecurity } from './settings.js';
+import { assertLocalConfig, editSettings, setSecurity, setSecurityPreset } from './settings.js';
 
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 export async function settingsCommand(path: string, args: string[], flags: { folder?: string; server?: string; revision?: string }): Promise<boolean> {
   const [command, operation = command === 'security' ? 'show' : 'status'] = args;
   if (command === 'security') {
     if (operation === 'show' && args.length <= 2) { print((await loadConfig(path)).security); return true; }
-    if (operation === 'reset' && args.length === 2) await editSettings(path, data => { data.security = { ...securityDefaults }; });
+    if (operation === 'preset' && args.length === 3 && ['standard','full'].includes(args[2]!)) await setSecurityPreset(path, args[2] as 'standard' | 'full');
+    else if (operation === 'reset' && args.length === 2) await editSettings(path, data => { data.security = { ...securityDefaults }; });
     else if (operation === 'set' && args.length === 4 && ['on', 'off'].includes(args[3]!)) await setSecurity(path, args[2]!, args[3] === 'on');
-    else throw new Error('Use security show|reset, or security set KEY on|off.');
+    else throw new Error('Use security show|reset, security preset standard|full, or security set KEY on|off.');
     print({ security: (await loadConfig(path)).security, appliesOnNextRequest: true });
     return true;
   }

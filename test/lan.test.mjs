@@ -172,3 +172,20 @@ test('CLI worker launches once, reuses its authenticated GUI and stops without t
   for (let i = 0; i < 30 && await runningGui(path); i++) await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(await runningGui(path), undefined);
 });
+test('paired LAN peers transfer global files with modern inventory and negotiate older peers without sending globals',async t=>{
+ const {make}=await fixture(t);const a=await make('new-a');const b=await make('new-b');await pair(a,b);
+ const first=await a.sync.publishGlobal({kind:'agents',target:'AGENTS.md',files:{content:{encoding:'utf8',content:'Shared instructions'}}});
+ await a.peer.tick();assert.ok((await b.sync.inventory()).includes(first));
+ assert.deepEqual((await request(b.peer.identity,{address:'127.0.0.1',port:a.peer.port},a.peer.id,{op:'inventory'},options.allowed)).revisions,[]);
+ const legacyHost=await make('legacy-host');const c=await make('legacy');await pair(legacyHost,c);
+
+ // Emulate v0.5's unknown-operation rejection; the transport, certificates and stores stay real.
+ const handle=c.peer.handle.bind(c.peer);let probes=0;
+ c.peer.handle=async(id,message,address)=>{if(message.op==='inventory2'){probes++;throw new Error('Unknown operation');}return handle(id,message,address);};
+ const second=await legacyHost.sync.publishGlobal({kind:'agents',target:'AGENTS.md',files:{content:{encoding:'utf8',content:'Modern update'}}});
+ const server=await legacyHost.sync.publish('docs',configSchema.parse({version:1,servers:{docs:{transport:'http',url:'https://example.com/mcp',description:'docs'}}}).servers.docs,{});
+ await legacyHost.peer.tick();assert.equal((await c.sync.inventory()).includes(second),false);assert.ok((await c.sync.inventory()).includes(server));
+ await legacyHost.peer.tick();assert.equal(probes,1);
+ const cached=legacyHost.peer.capabilities.get(c.peer.id);cached.checked=Date.now()-61000;c.peer.handle=handle;
+ await legacyHost.peer.tick();assert.ok((await c.sync.inventory()).includes(second));
+});

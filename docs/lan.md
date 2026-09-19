@@ -7,7 +7,7 @@ v0.5以降では、共有フォルダーや外部アカウントを用意せず�
 両端末にNode.js 22.12以上と[Hub](../README.md#セットアップ)をインストールします。リリースのパッケージを直接インストールすることもできます。
 
 ```sh
-npm install --global https://github.com/coco4atJP/mcp-context-hub/releases/download/v0.5.0/nekon-mcp-context-hub-0.5.0.tgz
+npm install --global https://github.com/coco4atJP/mcp-context-hub/releases/download/v0.6.0/nekon-mcp-context-hub-0.6.0.tgz
 # 初めて設定する端末だけ実行（既存設定は上書きしません）
 mcp-context-hub init
 mcp-context-hub install-skill
@@ -90,3 +90,7 @@ mDNSには端末の識別子とポートだけを載せ、招待秘密やSkill�
 ペアは最大20台、1フレーム3 MiB、履歴は2,000版・64 MiB、1版2 MiBです。受信内容のハッシュ・形式・パス・Skill構造を再検証します。以前のSkill内容は履歴にも残り、接続した相手はその履歴を再配布できます。ペアリングは相手へのデータ共有を許可する操作で、OSユーザーや共有済み内容からのプロンプトインジェクションを隔離するサンドボックスではありません。
 
 実装の基盤: [Node.js TLS](https://nodejs.org/api/tls.html)、[multicast-dns](https://github.com/mafintosh/multicast-dns)、[macOS LaunchAgent](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
+
+## グローバルSkills・設定
+
+v0.6以降では同じペアリングで `~/.agents` の選択済みファイルも共有できます。両端末の「同期」→「グローバルSkills・設定」で対象とON/OFFを設定します。[設定手順と適用ルール](global-agents.md)。v0.5の相手には従来のMCP登録だけを転送します。

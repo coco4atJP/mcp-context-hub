@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { readText } from './storage.js';
+import { actionSchema, control } from './control.js';
+import { editSettings } from './settings.js';
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { configPath, initConfig, loadConfig, urlHandlerConfigPath } from './config.js';
@@ -20,21 +23,40 @@ async function main() {
     await launchGui(urlHandlerConfigPath(), undefined, { invitation: process.argv[3] }); return;
   }
   const { values, positionals } = parseArgs({ options: { config: { type: 'string' }, 'skills-dir': { type: 'string' }, help: { type: 'boolean', short: 'h' },
-    folder: { type: 'string' }, server: { type: 'string' }, revision: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' }, url: { type: 'string' }, session: { type: 'string' }, peer: { type: 'string' } }, allowPositionals: true });
+    input: { type: 'string' }, target: { type: 'string' }, overwrite: { type: 'boolean' }, folder: { type: 'string' }, server: { type: 'string' }, revision: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' }, url: { type: 'string' }, session: { type: 'string' }, peer: { type: 'string' } }, allowPositionals: true });
   if (values.help) {
     console.log('mcp-context-hub [serve|init|check|config-path] [--config /absolute/config.json]\nmcp-context-hub install-skill [--skills-dir /path/to/skills]\nDefault command: serve. Config: MCP_HUB_CONFIG or ~/.config/mcp-context-hub/config.json');
     console.log('mcp-context-hub gui [--no-open] [--port PORT]\nmcp-context-hub sync connect --folder EXISTING_ABSOLUTE_PATH\nmcp-context-hub sync disconnect|status\nmcp-context-hub sync publish|inspect|remove --server ID\nmcp-context-hub sync approve|resolve --server ID --revision SHA256\nmcp-context-hub security show|reset\nmcp-context-hub security set KEY on|off\nAll commands accept --config. Sync uses an existing shared folder. GUI opens locally; --no-open runs in the foreground. Owner config changes apply on the next MCP request.');
     console.log('mcp-context-hub lan start|stop|status|disable|install|uninstall|invite|cancel\nmcp-context-hub lan pair --url INVITATION_URL\nmcp-context-hub lan confirm --session ID\nmcp-context-hub lan unpair --peer FINGERPRINT\nLAN pairing uses a one-time URL and confirmation on both devices. install registers login startup and URL handling on macOS/Windows. daemon runs the worker in the foreground.');
+    console.log('mcp-context-hub security preset standard|full\nmcp-context-hub control ACTION [--server ID] [--input OPTIONS_JSON_FILE]\nmcp-context-hub agents enable|disable|status|preview|sync\nmcp-context-hub agents configure --input SETTINGS_JSON_FILE\nmcp-context-hub agents inspect|publish|apply|resolve|remove --target RELATIVE_PATH [--revision SHA256] [--overwrite]\ncontrol uses Agent permissions; security/agents CLI commands are owner operations.');
     return;
   }
   const command = positionals[0] ?? 'serve';
-  if (!['sync', 'security', 'lan'].includes(command) && positionals.length > 1) throw new Error('Expected at most one command. Use --help.');
+  if (!['sync', 'security', 'lan', 'control', 'agents'].includes(command) && positionals.length > 1) throw new Error('Expected at most one command. Use --help.');
+  if (values.input && !['control','agents'].includes(command)) throw new Error('--input requires control or agents.');
+  if ((values.target || values.overwrite) && command !== 'agents') throw new Error('--target/--overwrite require agents.');
   if (values['skills-dir'] && command !== 'install-skill') throw new Error('--skills-dir is only valid for install-skill.');
-  if (command !== 'sync' && (values.folder || values.server || values.revision)) throw new Error('Sync flags require the sync command.');
+  if (!['sync','control','agents'].includes(command) && (values.folder || values.server || values.revision)) throw new Error('Sync flags require the sync command.');
   if (!['gui', 'daemon'].includes(command) && (values.port !== undefined || values['no-open'])) throw new Error('--port and --no-open require gui.');
   if (command !== 'lan' && (values.url || values.session || values.peer)) throw new Error('--url, --session and --peer require lan.');
   if (command === 'install-skill') { console.log(`Installed ${await installHubSkill(values['skills-dir'])}`); return; }
   const path = configPath(values.config);
+  if (command === 'control' || command === 'agents') {
+    if (positionals.length > 2) throw new Error('Unexpected arguments.');
+    const input = values.input ? JSON.parse(await readText(values.input, 1024 * 1024)) : {};
+    if (command === 'agents' && ['enable','disable','configure'].includes(positionals[1] ?? '')) {
+      await editSettings(path, data => { data.globalAgents = positionals[1] === 'configure' ? input : {...(data.globalAgents as object ?? {}), enabled:positionals[1]==='enable'}; });
+      console.log(JSON.stringify({globalAgents:(await loadConfig(path)).globalAgents}));return;
+    }
+    const runtime = new HubRuntime(path);
+    try {
+      const {hub, globals} = await runtime.get(); await hub.refresh();
+      const result = command === 'control' ? await control(hub, actionSchema.parse(positionals[1]), values.server, input)
+        : await globals.control({ operation:positionals[1] ?? 'status', ...input, ...(values.target ? {target:values.target}:{}), ...(values.revision ? {revision:values.revision}:{}), ...(values.overwrite ? {overwrite:true}:{}) },true);
+      console.log(JSON.stringify(result,null,2));
+    } finally {await runtime.close();}
+    return;
+  }
   if (await lanCommand(path, positionals, values)) return;
   if (command === 'gui' || command === 'daemon') {
     const port = values.port === undefined ? undefined : Number(values.port);

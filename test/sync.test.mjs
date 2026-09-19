@@ -190,10 +190,11 @@ test('untrusted sync input cannot smuggle policies, commands, paths, duplicate f
   assert.throws(() => assertLocalConfig(join(folder, 'config.json'), folder), /outside/);
 });
 
-test('MCP exposes sync and security progressively and cannot approve revisions or relax owner switches', async t => {
+test('MCP exposes sync and security progressively and enforces approval grants without allowing policy edits', async t => {
   const { a, b } = await setup(t);
   await assert.rejects(a.hub.syncControl('publish', 'design'), /disables agent publishing/);
-  for (const operation of ['approve', 'resolve', 'connect']) await assert.rejects(control(a.hub, 'sync', undefined, { operation }), /Invalid sync/);
+  for (const operation of ['approve', 'resolve']) await assert.rejects(control(a.hub, 'sync', undefined, { operation }), /disables agent sync approval/);
+  await assert.rejects(control(a.hub, 'sync', undefined, {operation:'connect'}),/Invalid sync/);
   await assert.rejects(control(a.hub, 'security', undefined, { requireSyncApproval: false }), /Invalid security/);
   const response = JSON.parse((await control(b.hub, 'security', undefined, {})).content[0].text);
   assert.equal(response.requireSyncApproval, true); assert.equal(response.mutableThroughMcp, false);

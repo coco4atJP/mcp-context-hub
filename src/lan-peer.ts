@@ -20,6 +20,7 @@ const messageSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('join'), token: secretSchema, name: nameSchema, port: endpointSchema.shape.port }).strict(),
   z.object({ op: z.literal('finish'), session: sessionSchema }).strict(),
   z.object({ op: z.literal('inventory') }).strict(),
+  z.object({ op: z.literal('inventory2') }).strict(),
   z.object({ op: z.literal('get'), revision: fingerprintSchema }).strict(),
   z.object({ op: z.literal('put'), revision: fingerprintSchema, data: z.string().max(2800000).regex(/^[A-Za-z0-9+/]*={0,2}$/) }).strict(),
 ]);
@@ -33,6 +34,7 @@ export type PeerOptions = {
 
 /** Only pairing and immutable-record exchange cross this boundary; no owner or MCP operations. */
 export class LanPeer {
+  private readonly capabilities = new Map<string,{globalFiles:boolean;checked:number}>();
   private readonly store: LocalStore<State>;
   private state!: State;
   private listener?: Awaited<ReturnType<typeof listen>>;
@@ -169,7 +171,7 @@ export class LanPeer {
     }
     if (!Object.hasOwn(this.state.peers, id)) throw new HubError('Unpaired device.');
     const sync = await this.syncStore();
-    if (message.op === 'inventory') return { revisions: await sync.inventory() };
+    if (message.op === 'inventory' || message.op === 'inventory2') return { revisions: await sync.inventory(message.op === 'inventory2') };
     if (message.op === 'get') return { data: Buffer.from(await sync.exportRevision(message.revision)).toString('base64') };
     await sync.importRevision(message.revision, new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(message.data, 'base64')));
     return { ok: true };
@@ -206,8 +208,13 @@ export class LanPeer {
       if (this.closed) return;
       try {
         const endpoints = this.endpoints(id, peer);
-        const response = z.object({ revisions: z.array(fingerprintSchema).max(2000) }).strict().parse(await this.contact(id, endpoints, { op: 'inventory' }));
-        const sync = await this.syncStore(); const local = await sync.inventory();
+        const caps=this.capabilities.get(id); let globalFiles=!caps || caps.globalFiles || Date.now()-caps.checked>60000;
+        let raw:unknown;
+        try { raw=await this.contact(id,endpoints,{op:globalFiles?'inventory2':'inventory'}); }
+        catch(error) { if(!globalFiles)throw error;globalFiles=false;raw=await this.contact(id,endpoints,{op:'inventory'}); }
+        this.capabilities.set(id,{globalFiles,checked:(!caps || globalFiles || Date.now()-caps.checked>60000) ? Date.now() : caps.checked});
+        const response = z.object({ revisions: z.array(fingerprintSchema).max(2000) }).strict().parse(raw);
+        const sync = await this.syncStore(); const local = await sync.inventory(globalFiles);
         const ours = new Set(local); const theirs = new Set(response.revisions);
         for (const revision of response.revisions.filter(value => !ours.has(value)).slice(0, 32)) {
           if (!Object.hasOwn(this.state.peers, id) || this.closed) break;

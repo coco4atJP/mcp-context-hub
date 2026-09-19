@@ -1,13 +1,13 @@
 import { z } from 'zod';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { configSchema, idSchema, securityDefaults } from './config.js';
+import { configSchema, idSchema, securityDefaults, securityPreset } from './config.js';
 import { HubRuntime } from './runtime.js';
 import { HubError } from './errors.js';
 import { DeviceState } from './device.js';
 import { SkillStore } from './skills.js';
 import { SyncManager } from './sync.js';
-import { assertLocalConfig, editSettings, setSecurity } from './settings.js';
+import { assertLocalConfig, editSettings, setSecurity, setSecurityPreset } from './settings.js';
 import type { GuiServer, GuiState } from './gui-types.js';
 
 const id = idSchema;
@@ -26,6 +26,8 @@ export const guiActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('attachSkill'), revision, server: id, skill: id, path: z.string().max(4000).refine(isAbsolute) }).strict(),
   z.object({ action: z.literal('security'), revision, key: z.enum(Object.keys(securityDefaults) as [keyof typeof securityDefaults, ...Array<keyof typeof securityDefaults>]), enabled: z.boolean() }).strict(),
   z.object({ action: z.literal('resetSecurity'), revision }).strict(),
+  z.object({ action: z.literal('securityPreset'), revision, preset: z.enum(['standard','full']) }).strict(),
+  z.object({ action: z.literal('globalSettings'), revision, value: configSchema.shape.globalAgents }).strict(),
   z.object({ action: z.literal('connect'), revision, folder: z.string().max(4000).refine(isAbsolute) }).strict(),
   z.object({ action: z.literal('disconnect'), revision }).strict(),
   z.object({ action: z.literal('pull') }).strict(),
@@ -64,12 +66,17 @@ export class GuiAdmin {
       const page = await current.sync.status(next, 20); sync.servers.push(...page.servers); next = page.nextOffset;
     }
     delete sync.nextOffset;
+    const globals = await current.globals.status(0, 100);
+    while (globals.nextOffset !== undefined && globals.nextOffset < 2000) {
+      const page = await current.globals.status(globals.nextOffset, 100); globals.entries.push(...page.entries); globals.nextOffset = page.nextOffset;
+    }
+    delete globals.nextOffset;
     const store = new SkillStore(current.config.skills);
     return {
       revision: current.revision, configPath: this.path, platform: process.platform, servers,
       templates: Object.entries(current.config.templates).map(([id, item]) => ({ id, description: item.description, transport: item.transport })),
       skills: await Promise.all(Object.keys(current.config.skills).map(async id => ({ id, description: (await store.summary(id)).description }))),
-      security: current.config.security, sync: { ...sync, folder: current.config.sync.folder },
+      security: current.config.security, securityPreset: securityPreset(current.config.security), globals, sync: { ...sync, folder: current.config.sync.folder },
     };
   }
 
@@ -141,6 +148,8 @@ export class GuiAdmin {
           target.skills = [...new Set([...(target.skills ?? []), operation.skill])];
         }, operation.revision);
       } else if (operation.action === 'security') await setSecurity(this.path, operation.key, operation.enabled, operation.revision);
+      else if (operation.action === 'securityPreset') await setSecurityPreset(this.path, operation.preset, operation.revision);
+      else if (operation.action === 'globalSettings') await editSettings(this.path, data => { data.globalAgents = operation.value; }, operation.revision);
       else if (operation.action === 'resetSecurity') await editSettings(this.path, data => { data.security = { ...securityDefaults }; }, operation.revision);
       else if (operation.action === 'connect') {
         const folder = await realpath(operation.folder);

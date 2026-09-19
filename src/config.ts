@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
+import { globalTarget } from './global-format.js';
 
 export const idSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => !['__proto__', 'prototype', 'constructor'].includes(value), 'Reserved ID');
 const id = idSchema;
@@ -22,6 +23,11 @@ export const securitySchema = z.object({
   allowStdio: z.boolean().default(true),
   allowHttp: z.boolean().default(true),
   allowAgentRegistration: z.boolean().default(true),
+  allowAgentStdio: z.boolean().default(false),
+  allowAgentCredentials: z.boolean().default(false),
+  allowAgentSkills: z.boolean().default(false),
+  allowAgentSyncApproval: z.boolean().default(false),
+  allowAgentGlobalFiles: z.boolean().default(false),
   allowAgentPublish: z.boolean().default(false),
   requireSyncApproval: z.boolean().default(true),
   requireHttps: z.boolean().default(true),
@@ -30,6 +36,10 @@ export const securitySchema = z.object({
   inheritProcessEnv: z.boolean().default(false),
 }).strict();
 export const securityDefaults = securitySchema.parse({});
+export const fullAccessSecurity = securitySchema.parse(Object.fromEntries(Object.keys(securityDefaults).map(key => [key, !['requireSyncApproval', 'requireHttps', 'blockPrivateHttp', 'enforceToolAllowlist'].includes(key)])));
+export const securityPreset = (security: z.infer<typeof securitySchema>) =>
+  Object.keys(securityDefaults).every(key => security[key as keyof typeof security] === fullAccessSecurity[key as keyof typeof security]) ? 'full'
+  : Object.keys(securityDefaults).every(key => security[key as keyof typeof security] === securityDefaults[key as keyof typeof security]) ? 'standard' : 'custom';
 const stdio = z.object({
   ...common,
   transport: z.literal('stdio'),
@@ -68,6 +78,12 @@ export const configSchema = z.object({
     pollIntervalMs: z.number().int().min(1000).max(3_600_000).default(10000),
     bindings: z.record(id, id).default({}),
   }).strict().default({ mode: 'folder', autoPublish: true, pollIntervalMs: 10000, bindings: {} }),
+  globalAgents: z.object({
+    enabled: z.boolean().default(false),
+    root: absolutePath.optional(),
+    skills: z.union([z.literal('all'), z.array(idSchema).max(500)]).default('all'),
+    files: z.array(z.string().refine(value => globalTarget(value) && !value.startsWith('skills/'))).max(100).default(['AGENTS.md']),
+  }).strict().default({ enabled: false, skills: 'all', files: ['AGENTS.md'] }),
   agent: z.object({
     allowPublicHttp: z.boolean().default(true),
     allowedHttpOrigins: z.array(z.url()).default([]),
@@ -76,6 +92,10 @@ export const configSchema = z.object({
   templates: z.record(id, serverSchema).default({}),
   servers: z.record(id, serverSchema),
 }).strict().superRefine((config, ctx) => {
+  if (new Set(config.globalAgents.files.map(file=>file.toLowerCase())).size !== config.globalAgents.files.length) ctx.addIssue({code:'custom',path:['globalAgents','files'],message:'Global file selections must be unique, ignoring case'});
+  for (const server of [...Object.keys(config.servers), ...Object.keys(config.templates)]) {
+    if (server.startsWith('agents-global-')) ctx.addIssue({ code: 'custom', path: ['servers', server], message: 'Reserved global sync namespace' });
+  }
   for (const [server, value] of [...Object.entries(config.servers), ...Object.entries(config.templates)]) {
     const bindings = [value.skills, ...Object.values(value.toolSkills)].flat();
     for (const skill of new Set(bindings)) {

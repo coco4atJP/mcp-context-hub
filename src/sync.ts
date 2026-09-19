@@ -7,6 +7,7 @@ import { HubError } from './errors.js';
 import { SkillStore } from './skills.js';
 import { atomicWrite, directory, LocalStore, readText } from './storage.js';
 import { validateAgentUrl } from './network.js';
+import { globalBundleSchema, globalId, isGlobalId, validateGlobalBundle, type GlobalBundle } from './global-format.js';
 import { assertLocalConfig } from './settings.js';
 
 const MAX_CHANGE = 2 * 1024 * 1024;
@@ -34,7 +35,7 @@ const bundleSchema = z.object({
 }).strict();
 export const changeSchema = z.object({
   version: z.literal(1), server: idSchema, device: z.uuid(),
-  parents: z.array(revisionSchema).max(128), bundle: bundleSchema.nullable(),
+  parents: z.array(revisionSchema).max(128), bundle: z.union([bundleSchema, globalBundleSchema]).nullable(),
 }).strict();
 type Bundle = z.infer<typeof bundleSchema>;
 type Change = z.infer<typeof changeSchema>;
@@ -62,7 +63,11 @@ export function portableFile(file: string): boolean {
 function validateChange(raw: unknown): Change {
   const change = changeSchema.parse(raw);
   if (new Set(change.parents).size !== change.parents.length) throw new HubError('Duplicate sync parents.');
-  if (change.bundle) {
+  if (change.bundle && 'kind' in change.bundle) {
+    if (change.server !== globalId(change.bundle.target)) throw new HubError('Global target identity mismatch.');
+    validateGlobalBundle(change.bundle);
+  } else if (change.bundle) {
+    if (isGlobalId(change.server)) throw new HubError('Reserved global sync identity.');
     const bundle = change.bundle;
     const attached = new Set([...bundle.skills, ...Object.values(bundle.toolSkills).flat()]);
     if (attached.size !== Object.keys(bundle.packages).length || [...attached].some(id => !Object.hasOwn(bundle.packages, id))) {
@@ -121,6 +126,8 @@ export class SyncManager {
   private snapshot?: Snapshot;
   private readyCache = new Map<string, SyncedServer>();
   private readonly storageFolder?: string;
+  private localResolver?: (id:string)=>Promise<{config:ServerConfig;privateHttp:boolean}|undefined>;
+  setLocalResolver(resolve:(id:string)=>Promise<{config:ServerConfig;privateHttp:boolean}|undefined>) { this.localResolver=resolve;this.readyCache.clear(); }
 
   constructor(private readonly config: Config, configPath: string) {
     if (config.sync.folder) assertLocalConfig(configPath, config.sync.folder);
@@ -173,11 +180,11 @@ export class SyncManager {
     let bytes = 0;
     for (const name of names.sort()) {
       // Temporary and provider conflict copies are not protocol records. Original hashes remain authoritative.
-      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+      if (!/^[a-f0-9]{64}(?:\.agents)?\.json$/.test(name)) continue;
       const text = await readText(join(root, 'changes', name), MAX_CHANGE);
       bytes += Buffer.byteLength(text);
       if (bytes > MAX_HISTORY_BYTES || changes.size >= MAX_HISTORY) throw new HubError('Sync history size limit reached.');
-      const revision = name.slice(0, -5);
+      const revision = name.slice(0, 64);
       if (digest(text) !== revision) throw new HubError('Shared revision integrity check failed.');
       const change = validateChange(JSON.parse(text));
       changes.set(revision, change);
@@ -243,7 +250,7 @@ export class SyncManager {
     }
   }
 
-  managedIds(): string[] { return Object.keys(this.state?.accepted ?? {}); }
+  managedIds(): string[] { return Object.keys(this.state?.accepted ?? {}).filter(id => !isGlobalId(id)); }
 
   private async materialize(server: string, revision: string, bundle: Bundle): Promise<{ paths: Record<string, string>; ids: Record<string, string> }> {
     const paths: Record<string, string> = {};
@@ -284,7 +291,9 @@ export class SyncManager {
     const template = binding ?? ('template' in bundle.connection ? bundle.connection.template : undefined);
     let base: ServerConfig;
     let privateHttp = true;
-    if (binding || (!Object.hasOwn(this.config.servers, id) && template)) {
+    const localAgent = !binding && !Object.hasOwn(this.config.servers,id) ? await this.localResolver?.(id) : undefined;
+    if (localAgent) { base=localAgent.config;privateHttp=localAgent.privateHttp; }
+    else if (binding || (!Object.hasOwn(this.config.servers, id) && template)) {
       if (!template || !Object.hasOwn(this.config.templates, template)) throw new HubError('needs-local-template');
       base = this.config.templates[template]!;
     } else if (Object.hasOwn(this.config.servers, id)) {
@@ -310,7 +319,7 @@ export class SyncManager {
       const observation = this.state?.observed[id];
       if (!observation || observation.incomplete || observation.heads.length !== 1 || observation.heads[0] !== revision) continue;
       const change = await this.cached(revision);
-      if (!change.bundle) continue;
+      if (!change.bundle || 'kind' in change.bundle) continue;
       try {
         let resolved = this.readyCache.get(revision);
         if (!resolved) { resolved = await this.resolveServer(id, revision, change.bundle); this.readyCache.set(revision, resolved); }
@@ -329,9 +338,9 @@ export class SyncManager {
       const accepted = revision === this.state?.accepted[id];
       const change = revision ? await this.cached(revision).catch(() => undefined) : undefined;
       const status = observation.incomplete ? 'incomplete' : observation.heads.length !== 1 ? 'conflict' : !accepted ? 'pending-approval'
-        : !change?.bundle ? 'deleted' : ready.has(id) ? 'ready' : 'needs-local-setup';
-      servers.push({ server: id, status, ...(revision ? { revision } : { heads: observation.heads }),
-        ...(change?.bundle ? { description: change.bundle.description.slice(0, 160), skills: Object.keys(change.bundle.packages).length } : {}) });
+        : !change?.bundle ? 'deleted' : isGlobalId(id) || ready.has(id) ? 'ready' : 'needs-local-setup';
+      servers.push({ server: id, kind: isGlobalId(id) ? 'agents' as const : 'server' as const, status, ...(revision ? { revision } : { heads: observation.heads }),
+        ...(change?.bundle ? ('kind' in change.bundle ? { description: change.bundle.target, skills: 0 } : { description: change.bundle.description.slice(0, 160), skills: Object.keys(change.bundle.packages).length }) : {}) });
     }
     return { connected: !!this.storageFolder, mode: this.config.sync.mode, ...(this.error ? { error: this.error } : {}),
       requireApproval: this.config.security.requireSyncApproval, agentCanPublish: this.config.security.allowAgentPublish,
@@ -361,7 +370,7 @@ export class SyncManager {
     this.state = await this.store.mutate(state => { state.accepted[id] = revision; });
   }
 
-  private async commit(id: string, bundle: Bundle | null, parents: string[]): Promise<string> {
+  private async commit(id: string, bundle: Bundle | GlobalBundle | null, parents: string[]): Promise<string> {
     this.state = await this.store.mutate(() => {});
     const change = validateChange({ version: 1, server: id, device: this.state.device, parents: [...parents].sort(), bundle });
     const text = JSON.stringify(change) + '\n';
@@ -370,7 +379,7 @@ export class SyncManager {
     await directory(this.storageFolder!);
     await directory(this.folder());
     await directory(join(this.folder(), 'changes'));
-    await atomicWrite(join(this.folder(), 'changes', revision + '.json'), text);
+    await atomicWrite(join(this.folder(), 'changes', revision + (isGlobalId(change.server) ? '.agents.json' : '.json')), text);
     await this.putCache(revision, text);
     this.state = await this.store.mutate(state => { state.accepted[id] = revision; state.observed[id] = { heads: [revision], incomplete: false }; });
     await this.pull(true);
@@ -392,7 +401,7 @@ export class SyncManager {
     const accepted = this.state?.accepted[id];
     if (accepted) {
       const previous = await this.cached(accepted);
-      for (const original of Object.keys(previous.bundle?.packages ?? {})) aliases['sync_' + digest(id + ':' + original).slice(0, 24)] = original;
+      for (const original of Object.keys(previous.bundle && !('kind' in previous.bundle) ? previous.bundle.packages : {})) aliases['sync_' + digest(id + ':' + original).slice(0, 24)] = original;
     }
     const originalId = (skill: string) => aliases[skill] ?? skill;
     const bindings = [...new Set([...config.skills, ...Object.values(config.toolSkills).flat()])];
@@ -408,15 +417,41 @@ export class SyncManager {
     return bundle;
   }
 
-  /** LAN is only a transport for the same immutable, strictly validated revisions. */
-  async inventory(): Promise<string[]> {
+
+  async publishGlobal(bundle: GlobalBundle): Promise<string> {
     await this.pull(true);
-    return [...this.requireSnapshot().changes.keys()].sort();
+    const id = globalId(bundle.target);
+    const observation = this.requireSnapshot().observed[id];
+    if (observation && (observation.incomplete || observation.heads.length !== 1)) throw new HubError('Resolve the global sync conflict first.');
+    return this.commit(id, bundle, observation?.heads ?? []);
+  }
+
+  async globalRecords() {
+    await this.pull();
+    if (this.error === 'invalid') throw new HubError('Global sync data is invalid.');
+    const records = [];
+    for (const [id, observation] of Object.entries(this.state?.observed ?? {})) {
+      if (!isGlobalId(id)) continue;
+      const revision = observation.heads.length === 1 ? observation.heads[0] : undefined;
+      const change = revision ? await this.cached(revision).catch(() => undefined) : undefined;
+      records.push({ id, revision, heads: observation.heads, incomplete: observation.incomplete,
+        accepted: !!revision && this.state?.accepted[id] === revision,
+        bundle: change?.bundle && 'kind' in change.bundle ? change.bundle : null });
+    }
+    return records;
+  }
+
+  /** LAN is only a transport for the same immutable, strictly validated revisions. */
+  async inventory(includeGlobal = true): Promise<string[]> {
+    await this.pull(true);
+    return [...this.requireSnapshot().changes].filter(([,change])=>includeGlobal || !isGlobalId(change.server)).map(([revision])=>revision).sort();
   }
 
   async exportRevision(revision: string): Promise<string> {
     revisionSchema.parse(revision);
-    const text = await readText(join(this.folder(), 'changes', revision + '.json'), MAX_CHANGE);
+    let text: string;
+    try { text = await readText(join(this.folder(), 'changes', revision + '.json'), MAX_CHANGE); }
+    catch(e) { if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e; text=await readText(join(this.folder(),'changes',revision+'.agents.json'),MAX_CHANGE); }
     if (digest(text) !== revision) throw new HubError('Revision integrity check failed.');
     validateChange(JSON.parse(text));
     return text;
@@ -425,7 +460,7 @@ export class SyncManager {
   async importRevision(revision: string, text: string): Promise<void> {
     revisionSchema.parse(revision);
     if (Buffer.byteLength(text) > MAX_CHANGE || digest(text) !== revision) throw new HubError('Invalid LAN revision.');
-    validateChange(JSON.parse(text));
+    const change = validateChange(JSON.parse(text));
     // Validate the entire local store before accepting another record; all limits also apply on the wire.
     await this.pull(true);
     const snapshot = this.requireSnapshot();
@@ -433,7 +468,7 @@ export class SyncManager {
     let bytes = Buffer.byteLength(text);
     for (const key of snapshot.changes.keys()) bytes += Buffer.byteLength(await this.exportRevision(key));
     if (snapshot.changes.size >= MAX_HISTORY || bytes > MAX_HISTORY_BYTES) throw new HubError('Sync history limit reached.');
-    await atomicWrite(join(this.folder(), 'changes', revision + '.json'), text);
+    await atomicWrite(join(this.folder(), 'changes', revision + (isGlobalId(change.server) ? '.agents.json' : '.json')), text);
   }
 
   async remove(id: string): Promise<string> {

@@ -4,8 +4,13 @@ import { Dialog, Switch } from './components.js';
 import { api } from './api.js';
 import type { RunAction } from './Servers.js';
 
-const relaxed: Record<string, boolean> = { allowAgentPublish: true, requireSyncApproval: false, requireHttps: false, blockPrivateHttp: false, enforceToolAllowlist: false, inheritProcessEnv: true };
+const relaxed: Record<string, boolean> = { allowAgentStdio: true, allowAgentCredentials: true, allowAgentSkills: true, allowAgentSyncApproval: true, allowAgentGlobalFiles: true, allowAgentPublish: true, requireSyncApproval: false, requireHttps: false, blockPrivateHttp: false, enforceToolAllowlist: false, inheritProcessEnv: true };
 const changes: Record<string, string> = {
+  allowAgentStdio: 'Agentが任意のローカルコマンドをMCPとして登録し、必要時に起動できるようになります。',
+  allowAgentCredentials: 'Agentが子プロセスの環境変数やHTTP認証ヘッダーを指定できるようになります。',
+  allowAgentSkills: 'AgentがローカルSkillフォルダーを登録し、その内容を読めるようになります。',
+  allowAgentSyncApproval: 'Agentが受信した版を承認し、競合時に採用する版を選べるようになります。',
+  allowAgentGlobalFiles: 'Agentが選択済みのグローバルSkills・設定ファイルを公開・適用できるようになります。',
   allowAgentPublish: 'AgentがMCP登録とSkillを共有先へ公開・削除できるようになります。',
   requireSyncApproval: '競合のない受信版を確認なしで取り込みます。共有フォルダーに書き込める相手が接続情報とSkillを更新できます。',
   requireHttps: 'Agentが平文HTTPのURLを登録できるようになります。その通信は暗号化されません。',
@@ -16,13 +21,16 @@ const changes: Record<string, string> = {
 export function Security({ state, run, busy, confirm, edit }: { state: GuiState; run: RunAction; busy: boolean; confirm: (title: string, text: string, action: Record<string, unknown>) => void; edit: () => void }) {
   return <>
     <h2>この端末の安全性</h2><p className="intro">設定は他の端末へ同期しません。</p>
+    <div className="section-heading"><h3>Agentのアクセス権限</h3><span className="hint">{state.securityPreset === 'full' ? 'フルアクセス' : state.securityPreset === 'standard' ? '標準' : 'カスタム'}</span></div>
+    <p className="hint">フルアクセスでは、登録・起動・共有・受信版の適用をAgentに任せます。権限そのものはこの画面で管理します。</p>
+    <div className="button-row"><button className="outline" disabled={busy || state.securityPreset === 'standard'} onClick={() => {void run({action:'securityPreset',revision:state.revision,preset:'standard'});}}>標準</button><button className="outline" disabled={busy || state.securityPreset === 'full'} onClick={() => confirm('フルアクセスを許可する','Agentに任意コマンドの登録・実行、認証設定、ローカルネットワーク、全MCPツール、環境変数、共有と受信版の適用を許可します。Hub内の都度承認を省略します。利用するAgent・OS側の権限は別に適用されます。接続先や同期対象は所有者が選択し、LANの認証と暗号化は維持します。',{action:'securityPreset',revision:state.revision,preset:'full'})}>フルアクセス</button></div>
     <ul className="security-list">{(Object.keys(securityLabels) as Array<keyof typeof securityLabels>).map(key => <li key={key}><div className="row-copy"><h3>{securityLabels[key][0]}</h3><p>{securityLabels[key][1]}</p></div><Switch label={securityLabels[key][0]} checked={state.security[key]} disabled={busy} onChange={enabled => {
       const action = { action: 'security', revision: state.revision, key, enabled };
       if (relaxed[key] === enabled) confirm(`「${securityLabels[key][0]}」を${enabled ? 'ON' : 'OFF'}にする`, changes[key] + ' この端末に適用します。', action);
       else void run(action);
     }} /></li>)}</ul>
     <p className="hint">変更は次のMCP要求から反映されます。既に行われた外部操作を取り消すものではありません。</p>
-    <div className="button-row"><button className="outline" disabled={busy} onClick={() => confirm('安全性を初期値に戻す', '9項目を推奨の初期値に戻します。その他の設定は保持します。', { action: 'resetSecurity', revision: state.revision })}>初期値に戻す</button><button className="quiet" disabled={busy} onClick={edit}>詳細設定（JSON）</button></div>
+    <div className="button-row"><button className="outline" disabled={busy} onClick={() => confirm('安全性を初期値に戻す', 'アクセス権限と安全性を標準の初期値に戻します。その他の設定は保持します。', { action: 'resetSecurity', revision: state.revision })}>初期値に戻す</button><button className="quiet" disabled={busy} onClick={edit}>詳細設定（JSON）</button></div>
     <p className="config-path">{state.configPath}</p>
   </>;
 }
